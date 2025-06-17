@@ -86,7 +86,7 @@ function loadFixedMessage() {
   try {
     if (fsSync.existsSync(FILE_PATH)) {
       const msg = fsSync.readFileSync(FILE_PATH, 'utf-8').trim();
-      logWithTime('📥 Mensagem fixa carregada do arquivo.', chalk.green);
+      logWithTime('📌 Mensagem fixa carregada do arquivo.', chalk.blue);
       return msg;
     }
   } catch (err) {
@@ -195,11 +195,11 @@ function aplicarTransformacoes(texto) {
 
 // === FUNÇÃO CORRIGIDA PARA COMBINAR DUAS PRIMEIRAS LINHAS + MENSAGEM FIXA ===
 function createEditedCaption(originalCaption, fixedMessage) {
-  logWithTime(`🔍 Criando legenda editada - Original: "${originalCaption ? originalCaption.substring(0, 100) : 'VAZIO'}..."`, chalk.blue);
+  logWithTime(`🪄 Criando legenda editada - Original: "${originalCaption ? originalCaption.substring(0, 100) : 'VAZIO'}..."`, chalk.blue);
   
   if (!originalCaption || originalCaption.trim() === '') {
     const resultado = aplicarTransformacoes(fixedMessage);
-    logWithTime(`📝 Legenda vazia, usando apenas mensagem fixa: "${resultado.substring(0, 50)}..."`, chalk.cyan);
+    logWithTime(`🫙 Legenda vazia, usando apenas mensagem fixa: "${resultado.substring(0, 50)}..."`, chalk.cyan);
     return resultado;
   }
 
@@ -207,7 +207,7 @@ function createEditedCaption(originalCaption, fixedMessage) {
   const lines = originalCaption.split('\n');
   const nonEmptyLines = lines.filter(line => line.trim() !== '');
   
-  logWithTime(`📊 Análise da legenda original: ${lines.length} linhas totais, ${nonEmptyLines.length} não vazias`, chalk.blue);
+  logWithTime(`🔍 Análise da legenda original: ${lines.length} linhas totais, ${nonEmptyLines.length} não vazias`, chalk.blue);
   
   let preservedText = '';
   
@@ -235,7 +235,7 @@ function createEditedCaption(originalCaption, fixedMessage) {
 // === DOWNLOAD DE MÍDIA ===
 async function downloadMedia(message, filename) {
   try {
-    logWithTime(`⬇️ Baixando mídia: ${filename}`, chalk.yellow);
+    logWithTime(`⬇️  Baixando mídia: ${filename}`, chalk.yellow);
     
     const filePath = path.join(DOWNLOADS_PATH, filename);
     const buffer = await client.downloadMedia(message, { outputFile: filePath });
@@ -273,7 +273,7 @@ async function enviarMidiaComLegendaOriginal(filePath, originalCaption, destino,
     const tipo = mediaType || detectMediaType(filePath);
     
     // CRÍTICO: Armazenar a legenda original ANTES de aplicar transformações
-    const legendaOriginalPura = originalCaption || '';
+    const legendaOriginalPura = originalCaption ?? '';
     logWithTime(`📤 Enviando mídia com legenda original: "${legendaOriginalPura.substring(0, 50)}..."`, chalk.blue);
     
     // Aplicar apenas transformações na legenda original (NÃO adicionar mensagem fixa ainda)
@@ -337,8 +337,8 @@ function scheduleMessageEditing(chatId, sentMessages, originalCaptions) {
   
   messageEditBuffer.set(editKey, editData);
   
-  logWithTime(`📝 Edição agendada para ${sentMessages.length} mensagens em ${EDIT_TIMEOUT/1000} segundos`, chalk.blue);
-  logWithTime(`🔍 Legendas originais armazenadas: ${originalCaptions.map(cap => `"${(cap || 'VAZIO').substring(0, 30)}..."`).join(', ')}`, chalk.cyan);
+  logWithTime(`📅 Edição agendada para ${sentMessages.length} mensagens em ${EDIT_TIMEOUT/1000} segundos`, chalk.blue);
+  logWithTime(`🧺 Legendas originais armazenadas: ${originalCaptions.map(cap => `"${(cap || 'VAZIO').substring(0, 30)}..."`).join(', ')}`, chalk.cyan);
   
   // Agendar edição
   setTimeout(() => {
@@ -435,7 +435,7 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
     validMessages.push(msg);
     
     // CRÍTICO: Armazenar a legenda original SEM modificações
-    const legendaOriginal = msg.caption || '';
+    const legendaOriginal = msg.caption ?? msg.message ?? '';
     originalCaptions.push(legendaOriginal);
     logWithTime(`📝 Armazenando legenda original ${index}: "${legendaOriginal.substring(0, 50)}..."`, chalk.cyan);
     
@@ -705,13 +705,13 @@ async function buffer_sem_group_timeout_handler(chatId) {
 
 // === CORREÇÃO PRINCIPAL: FUNÇÃO PARA MANTER DUAS PRIMEIRAS LINHAS + MENSAGEM FIXA ===
 function createEditedCaptionFixed(originalCaption, fixedMessage) {
-  logWithTime(`🔍 [CORRIGIDO] Criando legenda editada`, chalk.blue);
+  logWithTime(`🪄 Criando legenda editada`, chalk.yellow);
   logWithTime(`📝 Original: "${originalCaption ? originalCaption.substring(0, 100) : 'VAZIO'}..."`, chalk.cyan);
   logWithTime(`📝 Mensagem fixa: "${fixedMessage.substring(0, 50)}..."`, chalk.cyan);
   
   if (!originalCaption || originalCaption.trim() === '') {
     const resultado = aplicarTransformacoes(fixedMessage);
-    logWithTime(`📝 Legenda vazia, usando apenas mensagem fixa`, chalk.yellow);
+    logWithTime(`🫙 Legenda vazia, usando apenas mensagem fixa`, chalk.yellow);
     return resultado;
   }
 
@@ -770,7 +770,7 @@ async function processMessageEditingFixed(editKey) {
   
   const { chatId, sentMessages, originalCaptions } = editData;
   
-  logWithTime(`🔄 [CORRIGIDO] Iniciando processo de edição para ${sentMessages.length} mensagens`, chalk.cyan);
+  logWithTime(`🔄 Iniciando processo de edição para ${sentMessages.length} mensagens`, chalk.cyan);
   logWithTime(`🔍 Legendas originais disponíveis: ${originalCaptions.length}`, chalk.blue);
   
   // Debug: mostrar todas as legendas originais
@@ -851,12 +851,12 @@ function scheduleMessageEditingFixed(chatId, sentMessages, originalCaptions) {
   
   messageEditBuffer.set(editKey, editData);
   
-  logWithTime(`📝 [CORRIGIDO] Edição agendada para ${sentMessages.length} mensagens`, chalk.blue);
-  logWithTime(`⏰ Tempo de espera: ${EDIT_TIMEOUT/1000} segundos`, chalk.blue);
+  logWithTime(`📅 Edição agendada para ${sentMessages.length} mensagens`, chalk.white);
+  logWithTime(`⏰ Tempo de espera: ${EDIT_TIMEOUT/1000} segundos`, chalk.white);
   
   // Debug: mostrar legendas que serão usadas na edição
   originalCaptions.forEach((caption, index) => {
-    logWithTime(`🔍 Legenda armazenada ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
+    logWithTime(`🧺 Legenda armazenada ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
   });
   
   // Agendar edição usando a função corrigida
@@ -871,9 +871,9 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
     const tipo = mediaType || detectMediaType(filePath);
     
     // CORREÇÃO CRÍTICA: Garantir que a legenda original seja preservada exatamente como está
-    const legendaOriginalPura = originalCaption || '';
+    const legendaOriginalPura = originalCaption ?? '';
     
-    logWithTime(`📤 [CORRIGIDO] Enviando mídia`, chalk.blue);
+    logWithTime(`📤 Enviando mídia`, chalk.blue);
     logWithTime(`📝 Legenda original preservada: "${legendaOriginalPura.substring(0, 50)}..."`, chalk.cyan);
     
     // Aplicar apenas transformações na legenda original (SEM adicionar mensagem fixa)
@@ -952,10 +952,10 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
     validMessages.push(msg);
     
     // CORREÇÃO CRÍTICA: Armazenar a legenda original EXATAMENTE como está
-    const legendaOriginalPura = msg.caption || '';
+    const legendaOriginalPura = msg.caption ?? msg.message ?? '';
     originalCaptionsArray.push(legendaOriginalPura);
     
-    logWithTime(`📝 [CORRIGIDO] Armazenando legenda original ${index}:`, chalk.cyan);
+    logWithTime(`🧺  Armazenando legenda original ${index}:`, chalk.cyan);
     logWithTime(`    "${legendaOriginalPura.substring(0, 100)}..."`, chalk.magenta);
     
     const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
@@ -996,7 +996,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
     return;
   }
 
-  logWithTime(`🔍 [DEBUG] Legendas originais coletadas para o álbum:`, chalk.blue);
+  logWithTime(`🫙 Legendas originais coletadas para o álbum:`, chalk.blue);
   originalCaptionsArray.forEach((caption, index) => {
     logWithTime(`    ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
   });
@@ -1016,8 +1016,8 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
           item.caption = aplicarTransformacoes(primeiraLegendaOriginal);
           item.parse_mode = 'HTML';
           
-          logWithTime(`📝 [CORRIGIDO] Primeira mídia do álbum terá legenda:`, chalk.cyan);
-          logWithTime(`    "${item.caption.substring(0, 100)}..."`, chalk.magenta);
+          logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
+          logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
         }
         
         return item;
@@ -1028,7 +1028,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
       
       if (isEditActive && result && result.length > 0) {
-        logWithTime(`📝 [CORRIGIDO] Agendando edição para álbum`, chalk.blue);
+        logWithTime(`📝 Agendando edição para álbum`, chalk.blue);
         logWithTime(`🔍 Legendas que serão usadas na edição:`, chalk.blue);
         originalCaptionsArray.forEach((caption, index) => {
           logWithTime(`    ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
@@ -1172,16 +1172,16 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id) {
   
   if (filePath) {
     // CORREÇÃO CRÍTICA: Armazenar a legenda original EXATAMENTE como está
-    const originalCaptionPura = mensagem.caption || '';
+    const originalCaptionPura = mensagem.caption ?? mensagem.message ?? '';
     
-    logWithTime(`📤 [CORRIGIDO] Enviando mídia individual`, chalk.blue);
+    logWithTime(`📤 Enviando mídia individual`, chalk.blue);
     logWithTime(`📝 Legenda original: "${originalCaptionPura.substring(0, 50)}..."`, chalk.cyan);
     
     // Enviar com legenda ORIGINAL (com transformações apenas)
     const sentResult = await enviarMidiaComLegendaOriginalFixed(filePath, originalCaptionPura, destino_id);
     
     if (sentResult && sentResult.result && isEditActive) {
-      logWithTime(`📝 [CORRIGIDO] Agendando edição para mídia individual`, chalk.blue);
+      logWithTime(`📅 Agendando edição para mídia individual`, chalk.blue);
       // Passar a legenda ORIGINAL para edição
       scheduleMessageEditingFixed(destino_id, [{ message: sentResult.result }], [sentResult.originalCaption]);
     }
@@ -1221,7 +1221,7 @@ async function buffer_sem_group_timeout_handler_corrected(chatId) {
 
   if (msgs.length === 0) return;
 
-  logWithTime(`📦 [CORRIGIDO] Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.blue);
+  logWithTime(`📦 Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.yellow);
 
   for (const msg of msgs) {
     const destino = PARES_REPASSE[chatId];
@@ -1248,7 +1248,7 @@ client.addEventHandler(async (event) => {
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
 
-    logWithTime(`📨 [CORRIGIDO] Nova mensagem recebida de ${chatId}`, chalk.blue);
+    logWithTime(`🔔 Nova mensagem recebida de ${chatId}`, chalk.yellow);
 
     // Verificar se é álbum
     if (message.groupedId) {
@@ -1729,14 +1729,14 @@ async function iniciarBot() {
     if (Object.keys(PARES_REPASSE).length === 0) {
       logWithTime('⚠️ Nenhum par de repasse configurado!', chalk.yellow);
     } else {
-      logWithTime(`📋 ${Object.keys(PARES_REPASSE).length} pares de repasse configurados`, chalk.green);
+      logWithTime(`📋 ${Object.keys(PARES_REPASSE).length} pares de repasse configurados`, chalk.blue);
       for (const [origem, destino] of Object.entries(PARES_REPASSE)) {
-        logWithTime(`   ${origem} → ${destino}`, chalk.blue);
+        logWithTime(` ℹ️  ${origem} → ${destino}`, chalk.blue);
       }
     }
     
     // Conectar cliente Telegram
-    logWithTime('🔗 Conectando ao Telegram...', chalk.blue);
+    logWithTime(' 🔵 Conectando ao Telegram...', chalk.blue);
     await client.start({
       phoneNumber: async () => await input.text('Digite seu número de telefone: '),
       password: async () => await input.text('Digite sua senha: '),
@@ -1744,15 +1744,15 @@ async function iniciarBot() {
       onError: (err) => logWithTime(`❌ Erro de conexão: ${err.message}`, chalk.red),
     });
     
-    logWithTime('✅ Cliente Telegram conectado!', chalk.green);
+    logWithTime('👤 Cliente Telegram conectado!', chalk.green);
     
     // Inicializar bot
     logWithTime('🤖 Inicializando bot...', chalk.blue);
     
     // Configuração inicial
-    logWithTime(`🔄 Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.cyan);
-    logWithTime(`📝 Mensagem fixa: ${fixedMessage ? 'DEFINIDA' : 'NÃO DEFINIDA'}`, chalk.cyan);
-    logWithTime(`🔄 Transformações: ${transformations.size}`, chalk.cyan);
+    logWithTime(`✏️ Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.cyan);
+    logWithTime(`📌 Mensagem fixa: ${fixedMessage ? 'DEFINIDA' : 'NÃO DEFINIDA'}`, chalk.cyan);
+    logWithTime(`💱 Transformações: ${transformations.size}`, chalk.cyan);
     logWithTime(`🚫 Blacklist: ${blacklist.size}`, chalk.cyan);
     
     // Timeouts configurados
@@ -1760,7 +1760,7 @@ async function iniciarBot() {
     logWithTime(`⏰ Timeout buffer: ${BUFFER_SEM_GROUP_TIMEOUT/1000}s`, chalk.cyan);
     logWithTime(`⏰ Timeout edição: ${EDIT_TIMEOUT/1000}s`, chalk.cyan);
     
-    logWithTime('🎉 Bot iniciado com sucesso!', chalk.green);
+    logWithTime('🔛 Bot iniciado com sucesso!', chalk.green);
     logWithTime('📱 Aguardando mensagens...', chalk.blue);
     
   } catch (error) {

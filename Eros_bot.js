@@ -1,3 +1,19 @@
+const oldWrite = process.stdout.write;
+const unwantedLogPatterns = [
+  /\[INFO\] - \[Running gramJS version/,
+  /\[Connecting to \d+\.\d+\.\d+\.\d+:\d+\/TCPFull\.\.\.\]/,
+  /\[Connection to \d+\.\d+\.\d+\.\d+:\d+\/TCPFull complete!\]/,
+  /\[Using LAYER \d+ for initial connect\]/,
+];
+
+process.stdout.write = function (chunk, encoding, callback) {
+  const str = chunk.toString();
+  if (unwantedLogPatterns.some(rgx => rgx.test(str))) {
+    return true; // Silencia o log
+  }
+  return oldWrite.apply(process.stdout, arguments);
+};
+import './bootstrap-log.js';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
@@ -86,7 +102,7 @@ function loadFixedMessage() {
   try {
     if (fsSync.existsSync(FILE_PATH)) {
       const msg = fsSync.readFileSync(FILE_PATH, 'utf-8').trim();
-      logWithTime('📌 Mensagem fixa carregada do arquivo.', chalk.blue);
+      //logWithTime('📌 Mensagem fixa carregada do arquivo.', chalk.blue);       ///////////////////LOG DE MENSAGEM FIXA CARREGADA
       return msg;
     }
   } catch (err) {
@@ -486,25 +502,40 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
       originalCaptionsArray.unshift(captionedCaption);
       logWithTime(`🔀 Ordem do álbum ajustada: mídia com legenda movida para a primeira posição.`, chalk.yellow);
     }
-      // Construir mediaItems com legenda APENAS no primeiro item
-      const mediaItems = validResults.map((r, idx) => {
-        const item = {
-          type: r.mediaItem.type,
-          media: r.mediaItem.media
-        };
-        
-        // Aplicar legenda APENAS no primeiro item
-        if (idx === 0) {
-          const primeiraLegendaOriginal = r.originalCaption || '';
-          item.caption = aplicarTransformacoes(primeiraLegendaOriginal);
-          item.parse_mode = 'HTML';
-          
-          logWithTime(`📝 Primeira mídia do álbum terá legenda: "${item.caption.substring(0, 50)}..."`, chalk.cyan);
-        }
-        
-        return item;
-      });
-      
+      // Encontrar o índice da primeira mídia que tem legenda não vazia
+      let firstWithCaptionIdx = originalCaptionsArray.findIndex(caption =>
+        caption && caption.trim() !== "");
+
+      // Se não há legenda, mantém ordem, se há, coloca ela primeiro
+      if (firstWithCaptionIdx > 0) {
+        // Move o item com legenda para a primeira posição em todos os arrays relacionados
+        const [captionedResult] = validResults.splice(firstWithCaptionIdx, 1);
+        validResults.unshift(captionedResult);
+
+        const [captionedCaption] = originalCaptionsArray.splice(firstWithCaptionIdx, 1);
+        originalCaptionsArray.unshift(captionedCaption);
+      }
+
+        // Construir mediaItems com legenda APENAS no primeiro item
+        // Pegue a primeira legenda não-vazia do álbum (pode estar em qualquer posição!)
+        const legendaParaUsar = originalCaptionsArray.find(
+          caption => caption && caption.trim() !== ""
+        ) || "";
+
+        // Monta o album: só o primeiro item recebe legenda, e é sempre a não-vazia (se existir)
+        const mediaItems = validResults.map((r, idx) => {
+          const item = {
+            type: r.mediaItem.type,
+            media: r.mediaItem.media
+          };
+          if (idx === 0 && legendaParaUsar) {
+            item.caption = aplicarTransformacoes(legendaParaUsar);
+            item.parse_mode = 'HTML';
+            logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
+            logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
+          }
+          return item;
+        });
       logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
       
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
@@ -1243,11 +1274,24 @@ client.addEventHandler(async (event) => {
 
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
-
+        const txt = (message.caption ?? message.message ?? '').toLowerCase();/////// FILTRO MENSAGENS PROIBIDAS//////////
+    if (containsForbiddenPhrase(txt)) {     /////////////////////////////////////////////////////////////////////////////
+      logWithTime(`❌ Mensagem recebida contém frase proibida, ignorando COMPLETAMENTE`, chalk.red);  ///////////////////
+      mensagens_processadas.add(message.id);  ////////////////////////////////////////////////////////////////////////////
+      return; ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    } ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     logWithTime(`🔔 Nova mensagem recebida de ${chatId}`, chalk.yellow);
 
     // Verificar se é álbum
     if (message.groupedId) {
+        // FILTRO PARA ÁLBUM:
+      const txt = (message.caption ?? message.message ?? '').toLowerCase();
+      if (containsForbiddenPhrase(txt)) {
+        logWithTime(`❌ Mensagem de álbum contém frase proibida, ignorando COMPLETAMENTE`, chalk.red);
+        mensagens_processadas.add(message.id);
+        return; // NÃO adiciona ao album_cache
+      }
+      // FILTRO TERMINA
       const albumKey = `${chatId}_${message.groupedId}`;
       
       if (!album_cache.has(albumKey)) {
@@ -1656,7 +1700,7 @@ bot.onText(/\/test_caption (.+)/, (msg, match) => {
 
 // === HANDLERS DE ERRO E LIMPEZA ===
 process.on('SIGINT', async () => {
-  logWithTime('🛑 Sinal SIGINT recebido, encerrando...', chalk.yellow);
+  logWithTime('🛑 Solicitação de encerramento do bot detectado, encerrando...', chalk.red);
   
   // Cancelar todos os timeouts
   for (const timeoutId of timeout_tasks.values()) {
@@ -1727,12 +1771,12 @@ async function iniciarBot() {
     } else {
       logWithTime(`📋 ${Object.keys(PARES_REPASSE).length} pares de repasse configurados`, chalk.blue);
       for (const [origem, destino] of Object.entries(PARES_REPASSE)) {
-        logWithTime(` ℹ️  ${origem} → ${destino}`, chalk.blue);
+        logWithTime(`ℹ️  ${origem} → ${destino}`, chalk.blue);
       }
     }
     
     // Conectar cliente Telegram
-    logWithTime(' 🔵 Conectando ao Telegram...', chalk.blue);
+    logWithTime('🔵 Conectando ao Telegram...', chalk.blue);
     await client.start({
       phoneNumber: async () => await input.text('Digite seu número de telefone: '),
       password: async () => await input.text('Digite sua senha: '),
@@ -1743,10 +1787,10 @@ async function iniciarBot() {
     logWithTime('👤 Cliente Telegram conectado!', chalk.green);
     
     // Inicializar bot
-    logWithTime('🤖 Inicializando bot...', chalk.blue);
+    logWithTime('🤖 Inicializando bot de edição de legenda...', chalk.blue);
     
     // Configuração inicial
-    logWithTime(`✏️  Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.cyan);
+    logWithTime(`✏️  Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.green);
     logWithTime(`📌 Mensagem fixa: ${fixedMessage ? 'DEFINIDA' : 'NÃO DEFINIDA'}`, chalk.cyan);
     logWithTime(`💱 Transformações: ${transformations.size}`, chalk.cyan);
     logWithTime(`🚫 Blacklist: ${blacklist.size}`, chalk.cyan);

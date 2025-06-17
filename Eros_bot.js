@@ -1746,7 +1746,7 @@ async function iniciarBot() {
     logWithTime('🤖 Inicializando bot...', chalk.blue);
     
     // Configuração inicial
-    logWithTime(`✏️ Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.cyan);
+    logWithTime(`✏️  Edição: ${isEditActive ? 'ATIVA' : 'INATIVA'}`, chalk.cyan);
     logWithTime(`📌 Mensagem fixa: ${fixedMessage ? 'DEFINIDA' : 'NÃO DEFINIDA'}`, chalk.cyan);
     logWithTime(`💱 Transformações: ${transformations.size}`, chalk.cyan);
     logWithTime(`🚫 Blacklist: ${blacklist.size}`, chalk.cyan);

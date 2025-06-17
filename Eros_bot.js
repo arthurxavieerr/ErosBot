@@ -390,11 +390,10 @@ async function processMessageEditing(editKey) {
     const legendaParaUsar = originalCaptions.find(
       caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
     ) || '';
-    logWithTime(`🔍 Legenda original da primeira mensagem: "${firstOriginalCaption.substring(0, 100)}..."`, chalk.blue);
-    
+    logWithTime(`🔍 Legenda original da primeira mensagem: "${legendaParaUsar.substring(0, 100)}..."`, chalk.blue);
+
     // Criar a legenda editada usando a função corrigida
-    const editedCaption = createEditedCaption(firstOriginalCaption, fixedMessage);
-    
+    const editedCaption = createEditedCaption(legendaParaUsar, fixedMessage);
     if (editedCaption.trim() !== '') {
       try {
         await bot.editMessageCaption(editedCaption, {
@@ -489,56 +488,27 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
     logWithTime('❌ Nenhuma mídia foi baixada com sucesso', chalk.red);
     return;
   }
-
   try {
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.mediaItem.type))) {
-      // Garantir que a mídia com legenda venha primeiro
-    let captionedIndex = validResults.findIndex(
-      r => (r.originalCaption && r.originalCaption.trim() !== '')
-    );
-    if (captionedIndex > 0) {
-      const [captionedItem] = validResults.splice(captionedIndex, 1);
-      validResults.unshift(captionedItem);
-      // Ajustar as legendas também, se usar em paralelo
-      const [captionedCaption] = originalCaptionsArray.splice(captionedIndex, 1);
-      originalCaptionsArray.unshift(captionedCaption);
-      logWithTime(`🔀 Ordem do álbum ajustada: mídia com legenda movida para a primeira posição.`, chalk.yellow);
-    }
-      // Encontrar o índice da primeira mídia que tem legenda não vazia
-      let firstWithCaptionIdx = originalCaptionsArray.findIndex(caption =>
-        caption && caption.trim() !== "");
+      // Pegue a primeira legenda não-vazia do álbum (de qualquer posição!)
+      const legendaParaUsar = originalCaptionsArray.find(
+        caption => caption && caption.trim() !== ""
+      ) || "";
 
-      // Se não há legenda, mantém ordem, se há, coloca ela primeiro
-      if (firstWithCaptionIdx > 0) {
-        // Move o item com legenda para a primeira posição em todos os arrays relacionados
-        const [captionedResult] = validResults.splice(firstWithCaptionIdx, 1);
-        validResults.unshift(captionedResult);
-
-        const [captionedCaption] = originalCaptionsArray.splice(firstWithCaptionIdx, 1);
-        originalCaptionsArray.unshift(captionedCaption);
-      }
-
-        // Construir mediaItems com legenda APENAS no primeiro item
-        // Pegue a primeira legenda não-vazia do álbum (pode estar em qualquer posição!)
-        // Pegue a primeira legenda não-vazia de qualquer mídia
-        const legendaParaUsar = originalCaptionsArray.find(
-          caption => caption && caption.trim() !== ""
-        ) || "";
-
-        const mediaItems = validResults.map((r, idx) => {
-          const item = {
-            type: r.mediaItem.type,
-            media: r.mediaItem.media
-          };
-          // Só o primeiro item do álbum recebe a legenda encontrada
-          if (idx === 0 && legendaParaUsar) {
-            item.caption = aplicarTransformacoes(legendaParaUsar);
-            item.parse_mode = 'HTML';
-            logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
-            logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
-          }
-          return item;
-        });
+      const mediaItems = validResults.map((r, idx) => {
+        const item = {
+          type: r.mediaItem.type,
+          media: r.mediaItem.media
+        };
+        if (idx === 0 && legendaParaUsar) {
+          item.caption = aplicarTransformacoes(legendaParaUsar);
+          item.parse_mode = 'HTML';
+          logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
+          logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
+        }
+        return item;
+      });
+      // ...
       logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
       
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
@@ -822,11 +792,10 @@ async function processMessageEditingFixed(editKey) {
     const legendaParaUsar = originalCaptions.find(
       caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
     ) || '';
-    logWithTime(`🔍 Legenda original para edição: "${firstOriginalCaption.substring(0, 100)}..."`, chalk.blue);
-    
+    logWithTime(`🔍 Legenda original para edição: "${legendaParaUsar.substring(0, 100)}..."`, chalk.blue);
+
     // Usar a função corrigida para criar a legenda editada
-    const editedCaption = createEditedCaptionFixed(firstOriginalCaption, fixedMessage);
-    
+    const editedCaption = createEditedCaptionFixed(legendaParaUsar, fixedMessage);
     if (editedCaption.trim() !== '') {
       try {
         await bot.editMessageCaption(editedCaption, {

@@ -387,7 +387,9 @@ async function processMessageEditing(editKey) {
     }
     
     // CRÍTICO: Pegar a legenda original da primeira mensagem
-    const firstOriginalCaption = originalCaptions[0] || '';
+    const legendaParaUsar = originalCaptions.find(
+      caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
+    ) || '';
     logWithTime(`🔍 Legenda original da primeira mensagem: "${firstOriginalCaption.substring(0, 100)}..."`, chalk.blue);
     
     // Criar a legenda editada usando a função corrigida
@@ -519,23 +521,21 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
         // Construir mediaItems com legenda APENAS no primeiro item
         // Pegue a primeira legenda não-vazia do álbum (pode estar em qualquer posição!)
         const legendaParaUsar = originalCaptionsArray.find(
-          caption => caption && caption.trim() !== ""
+          caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
         ) || "";
-
-        // Monta o album: só o primeiro item recebe legenda, e é sempre a não-vazia (se existir)
-        const mediaItems = validResults.map((r, idx) => {
-          const item = {
-            type: r.mediaItem.type,
-            media: r.mediaItem.media
-          };
-          if (idx === 0 && legendaParaUsar) {
-            item.caption = aplicarTransformacoes(legendaParaUsar);
-            item.parse_mode = 'HTML';
-            logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
-            logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
-          }
-          return item;
-        });
+      // Só o primeiro item recebe a legenda
+      const mediaItems = validResults.map((r, idx) => {
+        const item = {
+          type: r.mediaItem.type,
+          media: r.mediaItem.media
+        };
+        // Só o PRIMEIRO item do álbum recebe legenda, e é sempre a não-vazia encontrada
+        if (idx === 0 && legendaParaUsar) {
+          item.caption = aplicarTransformacoes(legendaParaUsar);
+          item.parse_mode = 'HTML';
+        }
+        return item;
+      });
       logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
       
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
@@ -816,7 +816,9 @@ async function processMessageEditingFixed(editKey) {
     }
     
     // CORREÇÃO CRÍTICA: Usar a legenda original da primeira mensagem
-    const firstOriginalCaption = originalCaptions[0] || '';
+    const legendaParaUsar = originalCaptions.find(
+      caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
+    ) || '';
     logWithTime(`🔍 Legenda original para edição: "${firstOriginalCaption.substring(0, 100)}..."`, chalk.blue);
     
     // Usar a função corrigida para criar a legenda editada

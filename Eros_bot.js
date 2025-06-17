@@ -43,7 +43,7 @@ const frases_proibidas = [
 // Timeouts para buffers
 const ALBUM_TIMEOUT = 120000;
 const BUFFER_SEM_GROUP_TIMEOUT = 120000;
-const EDIT_TIMEOUT = 15000; // 15 segundos para edição
+const EDIT_TIMEOUT = 3000; // 15 segundos para edição
 
 // === INICIALIZAÇÃO ===
 const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API_HASH, {
@@ -474,6 +474,18 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
 
   try {
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.mediaItem.type))) {
+      // Garantir que a mídia com legenda venha primeiro
+    let captionedIndex = validResults.findIndex(
+      r => (r.originalCaption && r.originalCaption.trim() !== '')
+    );
+    if (captionedIndex > 0) {
+      const [captionedItem] = validResults.splice(captionedIndex, 1);
+      validResults.unshift(captionedItem);
+      // Ajustar as legendas também, se usar em paralelo
+      const [captionedCaption] = originalCaptionsArray.splice(captionedIndex, 1);
+      originalCaptionsArray.unshift(captionedCaption);
+      logWithTime(`🔀 Ordem do álbum ajustada: mídia com legenda movida para a primeira posição.`, chalk.yellow);
+    }
       // Construir mediaItems com legenda APENAS no primeiro item
       const mediaItems = validResults.map((r, idx) => {
         const item = {
@@ -688,7 +700,7 @@ async function buffer_sem_group_timeout_handler(chatId) {
 
   if (msgs.length === 0) return;
 
-  logWithTime(`📦 Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.blue);
+  logWithTime(`☁️ Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.blue);
 
   for (const msg of msgs) {
     const destino = PARES_REPASSE[chatId];
@@ -718,46 +730,30 @@ function createEditedCaptionFixed(originalCaption, fixedMessage) {
   // Dividir por quebras de linha, mantendo linhas vazias para preservar formatação
   const lines = originalCaption.split('\n');
   
-  // Encontrar as duas primeiras linhas com conteúdo real
-  const nonEmptyLines = [];
-  const lineIndexes = [];
-  
-  for (let i = 0; i < lines.length && nonEmptyLines.length < 2; i++) {
-    if (lines[i].trim() !== '') {
-      nonEmptyLines.push(lines[i]);
-      lineIndexes.push(i);
-    }
-  }
-  
-  logWithTime(`📊 Análise: ${lines.length} linhas totais, ${nonEmptyLines.length} linhas com conteúdo encontradas`, chalk.blue);
-  
-  let preservedText = '';
-  
-  if (nonEmptyLines.length >= 2) {
-    // Manter as duas primeiras linhas com conteúdo
-    preservedText = nonEmptyLines[0] + '\n' + nonEmptyLines[1];
-    logWithTime(`✅ Preservando 2 linhas: "${preservedText.replace(/\n/g, ' | ')}"`, chalk.green);
-  } else if (nonEmptyLines.length === 1) {
-    // Manter apenas a primeira linha
-    preservedText = nonEmptyLines[0];
-    logWithTime(`✅ Preservando 1 linha: "${preservedText}"`, chalk.green);
+  // Encontrar o índice da primeira linha que contém "⚡️Onlyfans"
+  const keyword = "⚡️Onlyfans";
+  const idx = lines.findIndex(line => line.includes(keyword));
+
+  let preservedLines = [];
+  if (idx !== -1) {
+    // Preserva todas as linhas ANTES da linha do keyword
+    preservedLines = lines.slice(0, idx);
+    logWithTime(`✅ Preservando linhas até "${keyword}" (não incluso).`, chalk.green);
   } else {
-    // Sem conteúdo, usar apenas mensagem fixa
-    const resultado = aplicarTransformacoes(fixedMessage);
-    logWithTime(`⚠️ Nenhuma linha com conteúdo, usando apenas mensagem fixa`, chalk.yellow);
-    return resultado;
+    // Se não encontrar, preserve só a primeira linha (ou ajuste como preferir)
+    preservedLines = [lines[0]];
+    logWithTime(`⚠️ Palavra-chave não encontrada, preservando apenas a primeira linha.`, chalk.yellow);
   }
 
   // Combinar: linhas preservadas + quebra dupla + mensagem fixa
-  const resultado = preservedText + '\n\n' + fixedMessage;
+  const resultado = preservedLines.join('\n') + '\n\n' + fixedMessage;
   const resultadoFinal = aplicarTransformacoes(resultado);
-  
+
   logWithTime(`✅ Legenda editada criada com sucesso`, chalk.green);
   logWithTime(`📝 Resultado: "${resultadoFinal.substring(0, 100)}..."`, chalk.cyan);
   
   return resultadoFinal;
 }
-
 // === CORREÇÃO: FUNÇÃO PARA PROCESSAR EDIÇÃO (USANDO A FUNÇÃO CORRIGIDA) ===
 async function processMessageEditingFixed(editKey) {
   const editData = messageEditBuffer.get(editKey);
@@ -925,7 +921,7 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
 async function enviarAlbumReenvioFixed(mensagens, destino_id) {
   if (!mensagens.length) return;
 
-  logWithTime(`📦 [CORRIGIDO] Preparando álbum para reenvio com ${mensagens.length} mensagens`, chalk.blue);
+  logWithTime(`📦 Preparando álbum para reenvio com ${mensagens.length} mensagens`, chalk.blue);
   
   if (albumContainsForbiddenPhrase(mensagens)) {
     logWithTime(`❌ ÁLBUM BLOQUEADO: Contém frase proibida. Nenhuma mensagem será enviada.`, chalk.red);
@@ -1049,7 +1045,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       for (const [index, result] of validResults.entries()) {
         const originalCaption = originalCaptionsArray[index] || '';
         
-        logWithTime(`📤 [CORRIGIDO] Enviando mídia individual ${index + 1}:`, chalk.blue);
+        logWithTime(`📤  Enviando mídia individual ${index + 1}:`, chalk.blue);
         logWithTime(`    Legenda original: "${originalCaption.substring(0, 50)}..."`, chalk.cyan);
         
         const sentResult = await enviarMidiaComLegendaOriginalFixed(
@@ -1070,7 +1066,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       }
       
       if (isEditActive && sentMessages.length > 0) {
-        logWithTime(`📝 [CORRIGIDO] Agendando edição para ${sentMessages.length} mensagens individuais`, chalk.blue);
+        logWithTime(`📝 Agendando edição para ${sentMessages.length} mensagens individuais`, chalk.blue);
         
         // Usar a função corrigida
         scheduleMessageEditingFixed(destino_id, sentMessages, sentOriginalCaptions);
@@ -1142,14 +1138,14 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id) {
       const textoOriginalPuro = mensagem.message;
       const textoComTransformacoes = aplicarTransformacoes(textoOriginalPuro);
       
-      logWithTime(`💬 [CORRIGIDO] Enviando texto`, chalk.blue);
+      logWithTime(`💬 Enviando texto`, chalk.blue);
       logWithTime(`📝 Texto original: "${textoOriginalPuro.substring(0, 50)}..."`, chalk.cyan);
       
       const result = await bot.sendMessage(destino_id, textoComTransformacoes);
       mensagens_processadas.add(mensagem.id);
       
       if (isEditActive && result) {
-        logWithTime(`📝 [CORRIGIDO] Agendando edição para mensagem de texto`, chalk.blue);
+        logWithTime(`📝 Agendando edição para mensagem de texto`, chalk.blue);
         // Passar o texto ORIGINAL para edição
         scheduleMessageEditingFixed(destino_id, [{ message: result }], [textoOriginalPuro]);
       }
@@ -1204,7 +1200,7 @@ async function album_timeout_handler_corrected(albumKey, destino) {
 
   if (msgs.length === 0) return;
 
-  logWithTime(`📦 [CORRIGIDO] Processando álbum com ${msgs.length} mensagens (albumKey: ${albumKey})`, chalk.blue);
+  logWithTime(`📦 Processando álbum com ${msgs.length} mensagens (albumKey: ${albumKey})`, chalk.blue);
   
   try {
     await enviarAlbumReenvioFixed(msgs, destino); // Usar a versão corrigida
@@ -1221,7 +1217,7 @@ async function buffer_sem_group_timeout_handler_corrected(chatId) {
 
   if (msgs.length === 0) return;
 
-  logWithTime(`📦 Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.yellow);
+  logWithTime(`☁️ Processando buffer sem grupo com ${msgs.length} mensagens (chatId: ${chatId})`, chalk.yellow);
 
   for (const msg of msgs) {
     const destino = PARES_REPASSE[chatId];
@@ -1310,15 +1306,15 @@ bot.onText(/\/status/, (msg) => {
   const status = `
 📊 *Status do Bot*
 
-🔄 *Edição:* ${isEditActive ? '✅ ATIVA' : '❌ INATIVA'}
+🪄 *Edição de texto:* ${isEditActive ? '✅ ATIVA' : '❌ INATIVA'}
 ⏰ *Timeout de Edição:* ${EDIT_TIMEOUT/1000}s
 📦 *Timeout de Álbum:* ${ALBUM_TIMEOUT/1000}s
-🔄 *Buffer Individual:* ${BUFFER_SEM_GROUP_TIMEOUT/1000}s
+☁️ *Buffer Individual:* ${BUFFER_SEM_GROUP_TIMEOUT/1000}s
 
 📝 *Mensagem Fixa:*
 ${fixedMessage ? `"${fixedMessage.substring(0, 100)}..."` : 'Não definida'}
 
-🔄 *Transformações:* ${transformations.size}
+💱 *Transformações:* ${transformations.size}
 🚫 *Blacklist:* ${blacklist.size}
 
 📊 *Estatísticas:*

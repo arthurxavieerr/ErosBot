@@ -520,22 +520,25 @@ async function enviarAlbumReenvio(mensagens, destino_id) {
 
         // Construir mediaItems com legenda APENAS no primeiro item
         // Pegue a primeira legenda não-vazia do álbum (pode estar em qualquer posição!)
+        // Pegue a primeira legenda não-vazia de qualquer mídia
         const legendaParaUsar = originalCaptionsArray.find(
-          caption => caption && caption.trim() !== "" && caption.trim().toUpperCase() !== "VAZIO..."
+          caption => caption && caption.trim() !== ""
         ) || "";
-      // Só o primeiro item recebe a legenda
-      const mediaItems = validResults.map((r, idx) => {
-        const item = {
-          type: r.mediaItem.type,
-          media: r.mediaItem.media
-        };
-        // Só o PRIMEIRO item do álbum recebe legenda, e é sempre a não-vazia encontrada
-        if (idx === 0 && legendaParaUsar) {
-          item.caption = aplicarTransformacoes(legendaParaUsar);
-          item.parse_mode = 'HTML';
-        }
-        return item;
-      });
+
+        const mediaItems = validResults.map((r, idx) => {
+          const item = {
+            type: r.mediaItem.type,
+            media: r.mediaItem.media
+          };
+          // Só o primeiro item do álbum recebe a legenda encontrada
+          if (idx === 0 && legendaParaUsar) {
+            item.caption = aplicarTransformacoes(legendaParaUsar);
+            item.parse_mode = 'HTML';
+            logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
+            logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
+          }
+          return item;
+        });
       logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
       
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
@@ -1040,11 +1043,9 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
         };
         
         // Aplicar legenda APENAS no primeiro item (COM TRANSFORMAÇÕES, SEM MENSAGEM FIXA)
-        if (idx === 0) {
-          const primeiraLegendaOriginal = r.originalCaption || '';
-          item.caption = aplicarTransformacoes(primeiraLegendaOriginal);
+        if (idx === 0 && legendaParaUsar) {
+          item.caption = aplicarTransformacoes(legendaParaUsar);
           item.parse_mode = 'HTML';
-          
           logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
           logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
         }

@@ -1268,60 +1268,75 @@ client.addEventHandler(async (event) => {
     logWithTime(`🔔 Nova mensagem recebida de ${chatId}`, chalk.yellow);
 
     // Verificar se é álbum
+    // Verificar se é álbum
     if (message.groupedId) {
         // FILTRO PARA ÁLBUM:
-      const txt = (message.caption ?? message.message ?? '').toLowerCase();
-      if (containsForbiddenPhrase(txt)) {
-        logWithTime(`❌ Mensagem de álbum contém frase proibida, ignorando COMPLETAMENTE`, chalk.red);
-        mensagens_processadas.add(message.id);
-        return; // NÃO adiciona ao album_cache
-      }
-      // FILTRO TERMINA
-      const albumKey = `${chatId}_${message.groupedId}`;
-      
-      if (!album_cache.has(albumKey)) {
-        album_cache.set(albumKey, []);
-      }
-      
-      album_cache.get(albumKey).push(message);
-      
-      // Cancelar timeout anterior se existir
-      if (timeout_tasks.has(albumKey)) {
-        clearTimeout(timeout_tasks.get(albumKey));
-      }
-      
-      // Definir novo timeout
-      const timeoutId = setTimeout(() => {
-        album_timeout_handler_corrected(albumKey, destino); // Usar versão corrigida
-      }, ALBUM_TIMEOUT);
-      
-      timeout_tasks.set(albumKey, timeoutId);
-      
-      logWithTime(`📦 Mensagem adicionada ao álbum ${albumKey} (${album_cache.get(albumKey).length} mensagens)`, chalk.yellow);
-      
+        const txt = (message.caption ?? message.message ?? '').toLowerCase();
+        if (containsForbiddenPhrase(txt)) {
+            logWithTime(`❌ Mensagem de álbum contém frase proibida, ignorando COMPLETAMENTE`, chalk.red);
+            mensagens_processadas.add(message.id);
+            return; // NÃO adiciona ao album_cache
+        }
+
+        const albumKey = `${chatId}_${message.groupedId}`;
+
+        // Adiciona mensagem ao cache do álbum
+        if (!album_cache.has(albumKey)) {
+            album_cache.set(albumKey, []);
+        }
+        album_cache.get(albumKey).push(message);
+
+        // Sempre reinicie o timeout: só será enviado após ALBUM_TIMEOUT ms sem novas mídias
+        if (timeout_tasks.has(albumKey)) {
+            clearTimeout(timeout_tasks.get(albumKey));
+        }
+        const timeoutId = setTimeout(async () => {
+            const msgs = album_cache.get(albumKey) || [];
+            album_cache.delete(albumKey);
+            timeout_tasks.delete(albumKey);
+
+            if (msgs.length === 0) return;
+
+            logWithTime(`📦 Processando álbum com ${msgs.length} mensagens (albumKey: ${albumKey})`, chalk.blue);
+
+            // Só envia o álbum se TODAS as mídias forem baixadas com sucesso
+            try {
+                await enviarAlbumReenvioFixed(msgs, destino); // garantir checagem interna de downloads
+            } catch (error) {
+                logWithTime(`❌ Erro no processamento do álbum: ${error.message}`, chalk.red);
+            }
+        }, ALBUM_TIMEOUT);
+
+        timeout_tasks.set(albumKey, timeoutId);
+
+        logWithTime(`📦 Mensagem adicionada ao álbum ${albumKey} (${album_cache.get(albumKey).length} mensagens)`, chalk.yellow);
+
+        // Nunca envie o álbum antes do timeout!
+        return;
     } else {
-      // Mensagem individual
-      if (!buffer_sem_group.has(chatId)) {
-        buffer_sem_group.set(chatId, []);
-      }
-      
-      buffer_sem_group.get(chatId).push(message);
-      
-      // Cancelar timeout anterior se existir
-      if (buffer_sem_group_tasks.has(chatId)) {
-        clearTimeout(buffer_sem_group_tasks.get(chatId));
-      }
-      
-      // Definir novo timeout
-      const timeoutId = setTimeout(() => {
-        buffer_sem_group_timeout_handler_corrected(chatId); // Usar versão corrigida
-      }, BUFFER_SEM_GROUP_TIMEOUT);
-      
-      buffer_sem_group_tasks.set(chatId, timeoutId);
-      
-      logWithTime(`📝 Mensagem individual adicionada ao buffer (${buffer_sem_group.get(chatId).length} mensagens)`, chalk.yellow);
+        // Mensagem individual
+        if (!buffer_sem_group.has(chatId)) {
+            buffer_sem_group.set(chatId, []);
+        }
+
+        buffer_sem_group.get(chatId).push(message);
+
+        // Cancelar timeout anterior se existir
+        if (buffer_sem_group_tasks.has(chatId)) {
+            clearTimeout(buffer_sem_group_tasks.get(chatId));
+        }
+
+        // Definir novo timeout
+        const timeoutId = setTimeout(() => {
+            buffer_sem_group_timeout_handler_corrected(chatId); // Usar versão corrigida
+        }, BUFFER_SEM_GROUP_TIMEOUT);
+
+        buffer_sem_group_tasks.set(chatId, timeoutId);
+
+        logWithTime(`📝 Mensagem individual adicionada ao buffer (${buffer_sem_group.get(chatId).length} mensagens)`, chalk.yellow);
+
+        return;
     }
-    
   } catch (error) {
     logWithTime(`❌ Erro no evento de nova mensagem: ${error.message}`, chalk.red);
   }

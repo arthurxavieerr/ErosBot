@@ -22,6 +22,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/NewMessage.js';
 import TelegramBot from 'node-telegram-bot-api';
 import chalk from 'chalk';
+import mime from 'mime-types';
 
 
 // === CONFIGURAÇÕES ===
@@ -92,11 +93,28 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
+function getFileOptions(filePath) {
+  return {
+    filename: path.basename(filePath),
+    contentType: mime.lookup(filePath) || 'application/octet-stream'
+  };
+}
 function logWithTime(message, color = chalk.white) {
   const now = new Date();
   const timestamp = now.toLocaleString('pt-BR');
   console.log(color(`[${timestamp}] ${message}`));
 }
+
+async function downloadMediaWithRetry(message, filename, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    const filePath = await downloadMedia(message, filename);
+    if (filePath) return filePath;
+    logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}`, chalk.yellow);
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  return null;
+}
+
 
 function loadFixedMessage() {
   try {
@@ -314,23 +332,23 @@ async function enviarMidiaComLegendaOriginal(filePath, originalCaption, destino,
       parse_mode: 'HTML'
     };
 
-    let result;
-    
-    switch (tipo) {
-      case 'photo':
-        result = await bot.sendPhoto(destino, filePath, options);
-        break;
-      case 'video':
-        result = await bot.sendVideo(destino, filePath, options);
-        break;
-      case 'audio':
-        result = await bot.sendAudio(destino, filePath, options);
-        break;
-      default:
-        result = await bot.sendDocument(destino, filePath, options);
-    }
+      let result;
+      const fileOptions = getFileOptions(filePath);
 
-    // Limpar arquivo temporário
+      switch (tipo) {
+        case 'photo':
+          result = await bot.sendPhoto(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        case 'video':
+          result = await bot.sendVideo(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        case 'audio':
+          result = await bot.sendAudio(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        default:
+          result = await bot.sendDocument(destino, { source: filePath, ...fileOptions }, options);
+      }
+
     try {
       await fs.unlink(filePath);
     } catch (e) {
@@ -432,15 +450,6 @@ async function processMessageEditing(editKey) {
   } catch (error) {
     logWithTime(`❌ Erro durante processo de edição: ${error.message}`, chalk.red);
   }
-}
-async function downloadMediaWithRetry(message, filename, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    const filePath = await downloadMedia(message, filename);
-    if (filePath) return filePath;
-    logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}`, chalk.yellow);
-    await new Promise(res => setTimeout(res, 2000));
-  }
-  return null;
 }
 
 // === ENVIO DE ÁLBUM COM LEGENDAS ORIGINAIS (CORRIGIDO) ===
@@ -918,22 +927,23 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
       parse_mode: 'HTML'
     };
 
-    let result;
-    
-    switch (tipo) {
-      case 'photo':
-        result = await bot.sendPhoto(destino, filePath, options);
-        break;
-      case 'video':
-        result = await bot.sendVideo(destino, filePath, options);
-        break;
-      case 'audio':
-        result = await bot.sendAudio(destino, filePath, options);
-        break;
-      default:
-        result = await bot.sendDocument(destino, filePath, options);
-    }
+      let result;
+      const fileOptions = getFileOptions(filePath);
 
+      switch (tipo) {
+        case 'photo':
+          result = await bot.sendPhoto(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        case 'video':
+          result = await bot.sendVideo(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        case 'audio':
+          result = await bot.sendAudio(destino, { source: filePath, ...fileOptions }, options);
+          break;
+        default:
+          result = await bot.sendDocument(destino, { source: filePath, ...fileOptions }, options);
+      }
+      
     // Limpar arquivo temporário
     try {
       await fs.unlink(filePath);

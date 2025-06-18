@@ -49,15 +49,6 @@ const PARES_REPASSE = {
   '-1002655206464': '-1002519203567',
 };
 
-// Frases proibidas para filtro de mensagens
-const frases_proibidas = [
-  "SEJA VIP", "ASSINE JÁ", "DÚVIDAS FREQUENTES",
-  "feedback", "#Feedback", "referencias",
-  "melhor referência em qualidade", "MEMBRO", "SATISFEITO",
-  "FEEDBACK", "referência", "referências", "100%", "Feedback",
-  "Aprovou", "Key Alves", "BBB", "Participante do BBB"
-];
-
 // Timeouts para buffers
 const ALBUM_TIMEOUT = 120000;
 const BUFFER_SEM_GROUP_TIMEOUT = 120000;
@@ -76,6 +67,7 @@ let isEditActive = true; // Ativado por padrão
 let fixedMessage = loadFixedMessage();
 let transformacoes = loadJSON(TRANSFORM_PATH, {});
 let blacklist = loadJSON(BLACKLIST_PATH, []);
+if (!Array.isArray(blacklist)) blacklist = [];
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
@@ -214,12 +206,10 @@ function extractChatId(message) {
 function containsForbiddenPhrase(text) {
   if (!text) return false;
   text = text.toLowerCase();
-  
-  const hasFixedForbidden = frases_proibidas.some(frase => text.includes(frase.toLowerCase()));
-  const hasBlacklistForbidden = blacklist.some(palavra => text.includes(palavra.toLowerCase()));
-  
-  return hasFixedForbidden || hasBlacklistForbidden;
+  if (!Array.isArray(blacklist)) return false; // segurança extra
+  return blacklist.some(palavra => text.includes(palavra.toLowerCase()));
 }
+
 
 function albumContainsForbiddenPhrase(mensagens) {
   for (const msg of mensagens) {
@@ -943,7 +933,7 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
         default:
           result = await bot.sendDocument(destino, { source: filePath, ...fileOptions }, options);
       }
-      
+
     // Limpar arquivo temporário
     try {
       await fs.unlink(filePath);
@@ -969,7 +959,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
   if (!mensagens.length) return;
 
   logWithTime(`📦 Preparando álbum para reenvio com ${mensagens.length} mensagens`, chalk.blue);
-  
+
   if (albumContainsForbiddenPhrase(mensagens)) {
     logWithTime(`❌ ÁLBUM BLOQUEADO: Contém frase proibida. Nenhuma mensagem será enviada.`, chalk.red);
     for (const m of mensagens) {
@@ -979,194 +969,169 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
   }
 
   mensagens.sort((a, b) => a.id - b.id);
-  
-  const downloadPromises = [];
-  const validMessages = [];
-  const originalCaptionsArray = [];
-  
-  for (const [index, msg] of mensagens.entries()) {
-    if (mensagens_processadas.has(msg.id)) continue;
-    
-    if (!msg.media) {
-      logWithTime(`⚠️ Mensagem ${msg.id} sem mídia, pulando...`, chalk.yellow);
-      continue;
-    }
 
-    validMessages.push(msg);
-    
-    // CORREÇÃO CRÍTICA: Armazenar a legenda original EXATAMENTE como está
+  // Monta as promises de download preservando o índice original
+  const downloadPromises = mensagens.map((msg, index) => {
+    if (mensagens_processadas.has(msg.id) || !msg.media) {
+      return Promise.resolve(null);
+    }
+    const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
     const legendaOriginalPura = msg.caption ?? msg.message ?? '';
-    originalCaptionsArray.push(legendaOriginalPura);
-    
     logWithTime(`🧺  Armazenando legenda original ${index}:`, chalk.cyan);
     logWithTime(`    "${legendaOriginalPura.substring(0, 100)}..."`, chalk.magenta);
-    
-    const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
-    
-    const downloadPromise = downloadMediaWithRetry(msg, filename).then(filePath => {
-      if (filePath) {
-        const mediaType = detectMediaType(filePath);
-        const mediaItem = {
-          type: mediaType === 'photo' ? 'photo' : (mediaType === 'video' ? 'video' : 'document'),
-          media: filePath
-        };
-
-        return { 
-          messageId: msg.id, 
-          mediaItem, 
-          filePath, 
-          originalCaption: legendaOriginalPura // Garantir que seja a legenda original
-        };
-      }
-      return null;
-    });
-    downloadPromises.push(downloadPromise);
-    mensagens_processadas.add(msg.id);
-  }
-
-  if (downloadPromises.length === 0) {
-    logWithTime('❌ Nenhuma mídia válida encontrada no álbum', chalk.red);
-    return;
-  }
+    return downloadMediaWithRetry(msg, filename).then(filePath => ({
+      index,
+      msg,
+      filePath,
+      originalCaption: legendaOriginalPura
+    }));
+  });
 
   const results = await Promise.all(downloadPromises);
-  const validResults = results.filter(r => r !== null);
 
-  // NOVA CHECAGEM: só envie se TODAS as mídias foram baixadas!
-  if (validResults.length !== mensagens.length) {
+  // Filtra só os downloads válidos e preserva o índice
+  const validResults = results.filter(r => r && r.filePath);
+
+  // Só envie se TODAS as mídias foram baixadas (considerando apenas mensagens com mídia e não processadas)
+  const expectedCount = mensagens.filter(m => m.media && !mensagens_processadas.has(m.id)).length;
+  if (validResults.length !== expectedCount) {
     logWithTime(
-      `❌ [FALHA DE ÁLBUM] Envio abortado: mídias baixadas (${validResults.length}) < esperado (${mensagens.length}).`,
+      `❌ [FALHA DE ÁLBUM] Envio abortado: mídias baixadas (${validResults.length}) < esperado (${expectedCount}).`,
       chalk.red
     );
-    // Opcional: colocar o álbum de volta no cache para tentar novamente depois
-    // album_cache.set(albumKey, mensagens);
+    // Limpa arquivos baixados
+    for (const r of validResults) {
+      try { await fs.unlink(r.filePath); } catch (e) {}
+    }
     return;
   }
+
+  // Ordena pelo índice original para garantir a ordem correta do álbum
+  validResults.sort((a, b) => a.index - b.index);
+
+  // Marca todas as mensagens como processadas
+  for (const r of validResults) {
+    mensagens_processadas.add(r.msg.id);
+  }
+
+  // Monta array de legendas originais para edição posterior
+  const originalCaptionsArray = validResults.map(r => r.originalCaption);
+
   logWithTime(`🫙 Legendas originais coletadas para o álbum:`, chalk.blue);
   originalCaptionsArray.forEach((caption, index) => {
     logWithTime(`    ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
   });
 
   try {
-    if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.mediaItem.type))) {
-      // Construir mediaItems com legenda APENAS no primeiro item
+    if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(detectMediaType(r.filePath)))) {
+      // Pega a primeira legenda não-vazia
       const legendaParaUsar = originalCaptionsArray.find(
         caption => caption && caption.trim() !== ""
       ) || "";
+
+      // Monta os mediaItems na ordem correta e só o primeiro recebe legenda
       const mediaItems = validResults.map((r, idx) => {
+        const type = detectMediaType(r.filePath);
         const item = {
-          type: r.mediaItem.type,
-          media: r.mediaItem.media
+          type: type === 'photo' ? 'photo'
+               : type === 'video' ? 'video'
+               : 'document',
+          media: r.filePath
         };
-        
-        // Aplicar legenda APENAS no primeiro item (COM TRANSFORMAÇÕES, SEM MENSAGEM FIXA)
         if (idx === 0 && legendaParaUsar) {
           item.caption = aplicarTransformacoes(legendaParaUsar);
           item.parse_mode = 'HTML';
           logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
           logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
         }
-        
         return item;
       });
-      
+
       logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
-      
+
       const result = await bot.sendMediaGroup(destino_id, mediaItems);
-      
+
       if (isEditActive && result && result.length > 0) {
         logWithTime(`📝 Agendando edição para álbum`, chalk.blue);
         logWithTime(`🔍 Legendas que serão usadas na edição:`, chalk.blue);
         originalCaptionsArray.forEach((caption, index) => {
           logWithTime(`    ${index}: "${(caption || 'VAZIO').substring(0, 50)}..."`, chalk.magenta);
         });
-        
-        // Usar a função corrigida
         scheduleMessageEditingFixed(destino_id, result, originalCaptionsArray);
       }
-      
+
       logWithTime(`✅ Álbum enviado com sucesso`, chalk.green);
-      
+
     } else {
       logWithTime(`📤 Enviando ${validResults.length} mídias individualmente`, chalk.yellow);
-      
+
       const sentMessages = [];
       const sentOriginalCaptions = [];
-      
+
       for (const [index, result] of validResults.entries()) {
         const originalCaption = originalCaptionsArray[index] || '';
-        
         logWithTime(`📤  Enviando mídia individual ${index + 1}:`, chalk.blue);
         logWithTime(`    Legenda original: "${originalCaption.substring(0, 50)}..."`, chalk.cyan);
-        
         const sentResult = await enviarMidiaComLegendaOriginalFixed(
-          result.filePath, 
-          originalCaption, 
-          destino_id, 
-          result.mediaItem.type
+          result.filePath,
+          originalCaption,
+          destino_id,
+          detectMediaType(result.filePath)
         );
-        
         if (sentResult && sentResult.result) {
           sentMessages.push({ message: sentResult.result });
           sentOriginalCaptions.push(sentResult.originalCaption);
         }
-        
         if (index < validResults.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
-      
+
       if (isEditActive && sentMessages.length > 0) {
         logWithTime(`📝 Agendando edição para ${sentMessages.length} mensagens individuais`, chalk.blue);
-        
-        // Usar a função corrigida
         scheduleMessageEditingFixed(destino_id, sentMessages, sentOriginalCaptions);
       }
-      
+
       logWithTime(`✅ Todas as mídias enviadas individualmente`, chalk.green);
     }
-    
-    // Limpar arquivos temporários
-    for (const result of validResults) {
-      try {
-        await fs.unlink(result.filePath);
-      } catch (e) {
+
+    // Limpa arquivos temporários
+    for (const r of validResults) {
+      try { await fs.unlink(r.filePath); } catch (e) {
         logWithTime(`⚠️ Erro ao deletar arquivo temporário: ${e.message}`, chalk.yellow);
       }
     }
-    
+
   } catch (error) {
     logWithTime(`❌ Erro ao enviar álbum: ${error.message}`, chalk.red);
-    
+
     logWithTime('🔄 Tentando envio individual como fallback...', chalk.yellow);
-    
+
     const sentMessages = [];
     const sentOriginalCaptions = [];
-    
+
     for (const [index, result] of validResults.entries()) {
       try {
         const originalCaption = originalCaptionsArray[index] || '';
         const sentResult = await enviarMidiaComLegendaOriginalFixed(result.filePath, originalCaption, destino_id);
-        
         if (sentResult && sentResult.result) {
           sentMessages.push({ message: sentResult.result });
           sentOriginalCaptions.push(sentResult.originalCaption);
         }
-        
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (individualErr) {
         logWithTime(`❌ Erro ao enviar mídia individual: ${individualErr.message}`, chalk.red);
       }
     }
-    
+
     if (isEditActive && sentMessages.length > 0) {
       scheduleMessageEditingFixed(destino_id, sentMessages, sentOriginalCaptions);
     }
-    
-    // Limpar arquivos temporários do fallback
-    for (const result of validResults) {
+
+    // Limpa arquivos temporários do fallback
+    for (const r of validResults) {
       try {
-        await fs.unlink(result.filePath);
+        await fs.unlink(r.filePath);
       } catch (e) {}
     }
   }

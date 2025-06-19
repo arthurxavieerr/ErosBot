@@ -1004,11 +1004,16 @@ async function processMessageEditingFixed(editKey) {
 
 // === CORREÇÃO: FUNÇÃO PARA AGENDAR EDIÇÃO (MELHORADO PARA DEBUG) ===
 function scheduleMessageEditingFixed(chatId, sentMessages, originalCaptions) {
+  logWithTime(`DEBUG: Entrando em scheduleMessageEditingFixed`, chalk.yellow);
+  logWithTime(`DEBUG: isEditActive = ${isEditActive}`, chalk.yellow);
+  logWithTime(`DEBUG: chatId = ${chatId}`, chalk.yellow);
+  logWithTime(`DEBUG: sentMessages = ${JSON.stringify(sentMessages)}`, chalk.yellow);
+  logWithTime(`DEBUG: originalCaptions = ${JSON.stringify(originalCaptions)}`, chalk.yellow);
+
   if (!isEditActive) {
     logWithTime(`⚠️ Edição desativada - não agendando edição`, chalk.yellow);
     return;
   }
-  
   const editKey = `${chatId}_${Date.now()}`;
   
   const editData = {
@@ -1120,10 +1125,12 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       return;
     }
 
-    // Processamento do álbum
+    // Download das mídias e coleta das legendas originais
+    const originalCaptions = [];
     const downloadPromises = mensagens.map((msg, index) => {
       if (mensagens_processadas.has(msg.id) || !msg.media) return Promise.resolve(null);
-      
+      const originalCaption = msg.caption || msg.message || '';
+      originalCaptions[index] = originalCaption;
       const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
       return downloadMediaWithRetry(msg, filename).then(filePath => {
         if (!filePath) return null;
@@ -1132,7 +1139,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
           msg,
           filePath,
           type: detectMediaType(filePath),
-          caption: msg.caption || msg.message || ''
+          caption: originalCaption
         };
       });
     });
@@ -1146,25 +1153,29 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       return;
     }
 
-    // Enviar como álbum se possível
+    // Monta o álbum já com a legenda editada na primeira mídia
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.type))) {
+      // Usa a legenda original da primeira mensagem não vazia para montar a editada
+      const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
+
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
         media: r.filePath,
-        caption: idx === 0 ? r.caption : undefined,
+        caption: idx === 0 ? legendaEditada : undefined,
         parse_mode: idx === 0 ? 'HTML' : undefined
       }));
 
-      const result = await bot.sendMediaGroup(destino_id, mediaItems);
-      
-      if (result) {
-        logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
-        cleanupAlbumResources(albumKey);
-      }
+      logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
+      await bot.sendMediaGroup(destino_id, mediaItems);
+
+      logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
+      cleanupAlbumResources(albumKey);
     } else {
-      // Enviar individualmente
+      // Envia individualmente, já com legenda transformada/formatada
       for (const item of validResults) {
-        await enviarMidiaComLegendaOriginalFixed(item.filePath, item.caption, destino_id, item.type);
+        const legendaEditada = createEditedCaptionFixed(item.caption, fixedMessage);
+        await enviarMidiaComLegendaOriginalFixed(item.filePath, legendaEditada, destino_id, item.type);
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       cleanupAlbumResources(albumKey);
@@ -1172,7 +1183,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
 
   } catch (error) {
     logWithTime(`❌ Erro ao processar álbum ${albumKey}: ${error.message}`, chalk.red);
-    
+
     if (metadata.attemptCount < 3) {
       metadata.isProcessing = false;
       setTimeout(() => {

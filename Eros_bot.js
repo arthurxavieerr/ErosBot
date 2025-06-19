@@ -1,14 +1,36 @@
 const oldWrite = process.stdout.write;
 const unwantedLogPatterns = [
+  // Logs de conexão/autenticação
   /\[INFO\] - \[Running gramJS version/,
   /\[Connecting to \d+\.\d+\.\d+\.\d+:\d+\/TCPFull\.\.\.\]/,
   /\[Connection to \d+\.\d+\.\d+\.\d+:\d+\/TCPFull complete!\]/,
   /\[Using LAYER \d+ for initial connect\]/,
-  /\[WARN\] - \[Connection closed while receiving data\]/,  // <---- Adicionado
-  /Error: Not connected/,                                    // <---- Adicionado
+  /\[Connected to /,
+  /\[WARN\] - \[Connection closed while receiving data\]/,
   /\[WARN\] - \[Disconnecting\.\.\.\]/,
   /\[INFO\] - \[Disconnecting from \d+\.\d+\.\d+\.\d+:\d+\/TCPFull\.\.\.\]/,
   /\[INFO\] - \[connection closed\]/,
+  /\[INFO\] - \[Connecting to /,
+  /\[INFO\] - \[Connected! Reading responses/,
+  /\[INFO\] - \[Received response of type /,
+  /\[INFO\] - \[Sequential: false/,
+  /\[INFO\] - \[First message ID: /,
+  /\[INFO\] - \[Last message ID: /,
+  /\[INFO\] - \[Messages: \d+\]/,
+  /\[INFO\] - \[Contains MORE: /,
+  /Error: Not connected/,
+  /\[INFO\] - \[Got response! /,
+  /\[INFO\] - \[Starting auth import/,
+  /\[INFO\] - \[Auth key already exists/,
+  /\[INFO\] - \[Connection inited!/,
+  /\[INFO\] - \[Starting session import/,
+  /\[INFO\] - \[Session imported!/,
+  /\[INFO\] - \[Updating session/,
+  /\[INFO\] - \[Session has been updated/,
+  /\[INFO\] - \[Starting initial connection/,
+  /\[INFO\] - \[Initial connection complete!/,
+  
+  // Adicione mais padrões aqui se ainda aparecerem logs indesejados
 ];
 
 let disconnectLogged = false;
@@ -86,7 +108,15 @@ const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API
   retryDelay: 1000,
   timeout: 10,
   autoReconnect: true,
-  maxConcurrentDownloads: 1
+  maxConcurrentDownloads: 1,
+  useWSS: true,
+  logger: { // Adicione esta configuração
+    log: () => {}, // Função vazia para logs normais
+    warn: () => {}, // Função vazia para avisos
+    error: (e) => logWithTime(`❌ Erro crítico: ${e}`, chalk.red), // Mantém apenas erros críticos
+    info: () => {}, // Função vazia para informações
+    debug: () => {} // Função vazia para debug
+  }
 });
 
 let isEditActive = true; // Ativado por padrão
@@ -145,24 +175,23 @@ function initializeAlbumMetadata(albumKey, groupId) {
 }
 
 function monitorActiveAlbums() {
-  const activeAlbums = Array.from(album_metadata.entries());
-  if (activeAlbums.length === 0) return; // Não mostra nada se não houver álbuns
-  
-  logWithTime(`📊 Status dos álbuns ativos:`, chalk.cyan);
-  
-  for (const [albumKey, metadata] of activeAlbums) {
-    const elapsed = Date.now() - new Date(metadata.startTime).getTime();
-    const messages = album_cache.get(albumKey) || [];
+  setInterval(() => {
+    const activeAlbums = Array.from(album_metadata.entries());
+    if (activeAlbums.length === 0) return;
     
-    logWithTime(`
-    🎭 Álbum: ${albumKey}
-    • Status: ${metadata.isProcessing ? '🔄 Processando' : '⏳ Aguardando'}
-    • Tentativas: ${metadata.attemptCount}/3
-    • Tempo ativo: ${Math.floor(elapsed/1000)}s
-    • Mídias: ${messages.length}
-    `, chalk.blue);
-  }
+    for (const [albumKey, metadata] of activeAlbums) {
+      const messages = album_cache.get(albumKey) || [];
+      const timeElapsed = Date.now() - metadata.lastUpdateTime;
+      
+      logWithTime(`📊 Álbum ${albumKey}:
+        • Mensagens: ${messages.length}
+        • Tempo desde última atualização: ${timeElapsed/1000}s
+        • Status: ${metadata.isProcessing ? '🔄 Processando' : '⏳ Aguardando'}
+        • Tentativas: ${metadata.attemptCount}`, chalk.blue);
+    }
+  }, 30000); // A cada 30 segundos
 }
+
 
 function checkAlbumProcessingStatus(albumKey) {
   const metadata = album_metadata.get(albumKey);
@@ -223,14 +252,23 @@ function isAlbumComplete(albumKey) {
   if (!metadata) return false;
 
   const messages = album_cache.get(albumKey) || [];
-
-  // Checagem: tempo após última mensagem + quantidade esperada (se conhecida)
   const timeElapsed = Date.now() - metadata.lastUpdateTime;
-  const hasEnoughTime = timeElapsed >= ALBUM_TIMEOUT / 2;
-  const hasExpectedCount = metadata.totalExpected === null || messages.length === metadata.totalExpected;
-
-  return hasEnoughTime && hasExpectedCount;
+  
+  // Aumentar o tempo mínimo de espera para garantir que todas as mensagens cheguem
+  const MIN_WAIT_TIME = 3000; // 3 segundos mínimo de espera
+  
+  // Se tivermos o total esperado, ainda esperamos o tempo mínimo
+  if (metadata.totalExpected !== null) {
+    return timeElapsed >= MIN_WAIT_TIME && messages.length === metadata.totalExpected;
+  }
+  
+  // Se não tivermos o total, usamos uma combinação de tempo e quantidade mínima
+  const hasMinimumMessages = messages.length >= 2; // Pelo menos 2 mensagens
+  const hasEnoughWaitTime = timeElapsed >= Math.max(MIN_WAIT_TIME, ALBUM_TIMEOUT / 2);
+  
+  return hasMinimumMessages && hasEnoughWaitTime;
 }
+
 async function downloadMediaWithRetry(message, filename, retries = 3) {
   for (let i = 0; i < retries; i++) {
     const filePath = await downloadMedia(message, filename);
@@ -406,7 +444,7 @@ function createEditedCaption(originalCaption, fixedMessage) {
 // === DOWNLOAD DE MÍDIA ===
 async function downloadMedia(message, filename) {
   try {
-    logWithTime(`⬇️  Baixando mídia: ${filename}`, chalk.yellow);
+    logWithTime(`⬇📥  Baixando mídia: ${filename}`, chalk.yellow);
     
     const filePath = path.join(DOWNLOADS_PATH, filename);
     const buffer = await client.downloadMedia(message, { outputFile: filePath });
@@ -1328,123 +1366,57 @@ client.addEventHandler(async (event) => {
 
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
-        const txt = (message.caption ?? message.message ?? '').toLowerCase();/////// FILTRO MENSAGENS PROIBIDAS//////////
-    if (containsForbiddenPhrase(txt)) {     /////////////////////////////////////////////////////////////////////////////
-      logWithTime(`❌ Mensagem recebida contém frase proibida, ignorando COMPLETAMENTE`, chalk.red);  ///////////////////
-      mensagens_processadas.add(message.id);  ////////////////////////////////////////////////////////////////////////////
-      return; ////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    } ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    logWithTime(`🔔 Nova mensagem recebida de ${chatId}`, chalk.yellow);
 
-    // Verificar se é álbum
     if (message.groupedId) {
-      // FILTRO PARA ÁLBUM:
       const albumKey = `${chatId}_${message.groupedId}`;
-
-      // Inicializar metadata do álbum se necessário
+      
+      // Inicializar ou atualizar metadata do álbum
       if (!album_metadata.has(albumKey)) {
         initializeAlbumMetadata(albumKey, message.groupedId);
         logWithTime(`📦 Novo álbum iniciado: ${albumKey}`, chalk.yellow);
       }
-
-      // Adiciona mensagem ao cache do álbum
+      
+      const metadata = album_metadata.get(albumKey);
+      
+      // Atualizar o cache e metadata
       if (!album_cache.has(albumKey)) {
         album_cache.set(albumKey, []);
       }
-      album_cache.get(albumKey).push(message);
+      
+      const messages = album_cache.get(albumKey);
+      if (!messages.some(m => m.id === message.id)) {
+        messages.push(message);
+        updateAlbumMetadata(albumKey, message);
+      }
 
-      // Atualiza metadados do álbum
-      updateAlbumMetadata(albumKey, message);
-
-      // Sempre reinicie o timeout
+      // Cancelar timeout anterior se existir
       if (timeout_tasks.has(albumKey)) {
         clearTimeout(timeout_tasks.get(albumKey));
       }
 
+      // Configurar novo timeout
       const timeoutId = setTimeout(async () => {
-        const metadata = album_metadata.get(albumKey);
-        if (!metadata) return;
-
-        // Não processa se já estiver em processamento
-        if (metadata.isProcessing) {
-          logWithTime(`⚠️ Álbum ${albumKey} já está sendo processado`, chalk.yellow);
-          return;
-        }
-
-        // Não processa se já marcado como "processingStarted"
-        if (metadata.processingStarted) {
-          logWithTime(`⚠️ Álbum ${albumKey} já teve o processamento iniciado`, chalk.yellow);
-          return;
-        }
-
-        if (isAlbumComplete(albumKey)) {
-          metadata.processingStarted = true; // Marca que está começando
-          metadata.isProcessing = true;
-          metadata.attemptCount = (metadata.attemptCount || 0) + 1;
-
-          const msgs = album_cache.get(albumKey) || [];
-          logWithTime(`🎯 Processando álbum completo ${albumKey} com ${msgs.length} mensagens (Tentativa ${metadata.attemptCount})`, chalk.green);
-
+        // Verificação adicional antes de processar
+        if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
+          logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
+          
           try {
-            await enviarAlbumReenvioFixed(msgs, destino);
-            logWithTime(`✅ Álbum ${albumKey} processado com sucesso`, chalk.green);
-
-            // Limpeza após sucesso
-            album_cache.delete(albumKey);
-            album_metadata.delete(albumKey);
-            timeout_tasks.delete(albumKey);
-
+            metadata.processingStarted = true;
+            metadata.isProcessing = true;
+            await enviarAlbumReenvioFixed(messages, destino);
           } catch (error) {
             logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
-
-            // Permite até 3 tentativas
             metadata.isProcessing = false;
-            if (metadata.attemptCount < 3) {
-              logWithTime(`🔄 Nova tentativa agendada para álbum ${albumKey}`, chalk.yellow);
-              setTimeout(async () => {
-                const newMsgs = album_cache.get(albumKey) || [];
-                if (newMsgs.length) {
-                  await enviarAlbumReenvioFixed(newMsgs, destino);
-                }
-              }, 5000); // 5 segundos de espera para nova tentativa
-            } else {
-              logWithTime(`❌ Álbum ${albumKey} falhou após ${metadata.attemptCount} tentativas. Limpando.`, chalk.red);
-              album_cache.delete(albumKey);
-              album_metadata.delete(albumKey);
-              timeout_tasks.delete(albumKey);
-            }
           }
         }
       }, ALBUM_TIMEOUT);
 
       timeout_tasks.set(albumKey, timeoutId);
       return;
-    } else {
-      
-      // ... resto do código para mensagens individuais ...
-        // Mensagem individual
-        if (!buffer_sem_group.has(chatId)) {
-            buffer_sem_group.set(chatId, []);
-        }
-
-        buffer_sem_group.get(chatId).push(message);
-
-        // Cancelar timeout anterior se existir
-        if (buffer_sem_group_tasks.has(chatId)) {
-            clearTimeout(buffer_sem_group_tasks.get(chatId));
-        }
-
-        // Definir novo timeout
-        const timeoutId = setTimeout(() => {
-            buffer_sem_group_timeout_handler_corrected(chatId); // Usar versão corrigida
-        }, BUFFER_SEM_GROUP_TIMEOUT);
-
-        buffer_sem_group_tasks.set(chatId, timeoutId);
-
-        logWithTime(`📝 Mensagem individual adicionada ao buffer (${buffer_sem_group.get(chatId).length} mensagens)`, chalk.yellow);
-
-        return;
     }
+    
+    // ... resto do código para mensagens individuais ...
+
   } catch (error) {
     logWithTime(`❌ Erro no evento de nova mensagem: ${error.message}`, chalk.red);
   }
@@ -1971,6 +1943,7 @@ if (process.argv[1] === __filename) {
   console.log('🚀 Iniciando bot...');
   iniciarBot();
   iniciarMonitoramento();
+  monitorActiveAlbums();
 }
 // === EXPORTS (SE FOR MÓDULO) ===
 export {

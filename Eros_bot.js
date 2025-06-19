@@ -135,6 +135,7 @@ const buffer_sem_group = new Map();
 const buffer_sem_group_tasks = new Map();
 const mensagens_processadas = new Set();
 const messageEditBuffer = new Map();
+const albuns_bloqueados = new Set();
 
 // === CRIAR PASTA DE DOWNLOADS ===
 if (!fsSync.existsSync(DOWNLOADS_PATH)) {
@@ -255,18 +256,45 @@ function isAlbumComplete(albumKey) {
   const timeElapsed = Date.now() - metadata.lastUpdateTime;
   
   // Aumentar o tempo mínimo de espera para garantir que todas as mensagens cheguem
-  const MIN_WAIT_TIME = 3000; // 3 segundos mínimo de espera
+  const MIN_WAIT_TIME = 5000; // 5 segundos mínimo de espera
   
-  // Se tivermos o total esperado, ainda esperamos o tempo mínimo
-  if (metadata.totalExpected !== null) {
-    return timeElapsed >= MIN_WAIT_TIME && messages.length === metadata.totalExpected;
-  }
+  // NOVA VERIFICAÇÃO: Garantir que temos todas as mídias do mesmo tipo juntas
+  const mediaTypes = new Set(messages.map(msg => {
+    if (msg.media?.photo) return 'photo';
+    if (msg.media?.document) {
+      const mimeType = msg.media.document.mimeType || '';
+      if (mimeType.startsWith('video/')) return 'video';
+      if (mimeType.startsWith('image/')) return 'photo';
+    }
+    return 'unknown';
+  }));
+
+  // Se tivermos fotos e vídeos misturados, aguardar mais tempo
+  const hasMixedTypes = mediaTypes.size > 1;
+  const MIXED_TYPES_WAIT = hasMixedTypes ? 10000 : MIN_WAIT_TIME; // 10 segundos para tipos mistos
   
-  // Se não tivermos o total, usamos uma combinação de tempo e quantidade mínima
-  const hasMinimumMessages = messages.length >= 2; // Pelo menos 2 mensagens
-  const hasEnoughWaitTime = timeElapsed >= Math.max(MIN_WAIT_TIME, ALBUM_TIMEOUT / 2);
-  
-  return hasMinimumMessages && hasEnoughWaitTime;
+  // Verificar se as mensagens estão em sequência
+  const messageIds = messages.map(m => m.id).sort((a, b) => a - b);
+  const isSequential = messageIds.every((id, index) => {
+    if (index === 0) return true;
+    return (id - messageIds[index - 1]) === 1;
+  });
+
+  // Condições para considerar o álbum completo
+  const hasEnoughWaitTime = timeElapsed >= MIXED_TYPES_WAIT;
+  const hasMinimumMessages = messages.length >= 2;
+  const isStable = timeElapsed >= (messages.length * 1000); // 1 segundo por mensagem
+
+  // Log detalhado do status
+  logWithTime(`🔍 Verificando completude do álbum ${albumKey}:
+    • Mensagens: ${messages.length}
+    • Tipos de mídia: ${Array.from(mediaTypes).join(', ')}
+    • Tempo decorrido: ${timeElapsed}ms
+    • Sequencial: ${isSequential}
+    • Tempo mínimo: ${hasEnoughWaitTime}
+    • Estável: ${isStable}`, chalk.blue);
+
+  return hasEnoughWaitTime && hasMinimumMessages && isSequential && isStable;
 }
 
 async function downloadMediaWithRetry(message, filename, retries = 3) {
@@ -1317,21 +1345,39 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id) {
 
 // No handler de timeout do álbum:
 async function album_timeout_handler_corrected(albumKey, destino) {
-  const msgs = album_cache.get(albumKey) || [];
-  album_cache.delete(albumKey);
-  timeout_tasks.delete(albumKey);
+    const metadata = album_metadata.get(albumKey);
+    if (!metadata) return;
 
-  if (msgs.length === 0) return;
+    // 1. Se bloqueado, limpa tudo e sai
+    if (albuns_bloqueados.has(albumKey)) {
+        logWithTime(`⛔ Álbum ${albumKey} está bloqueado, descartando e limpando.`, chalk.red);
+        albuns_bloqueados.delete(albumKey);
+        album_cache.delete(albumKey);
+        album_metadata.delete(albumKey);
+        timeout_tasks.delete(albumKey);
+        return;
+    }
 
-  logWithTime(`📦 Processando álbum com ${msgs.length} mensagens (albumKey: ${albumKey})`, chalk.blue);
-  
-  try {
-    await enviarAlbumReenvioFixed(msgs, destino); // Usar a versão corrigida
-  } catch (error) {
-    logWithTime(`❌ Erro no processamento do álbum: ${error.message}`, chalk.red);
-  }
+    // 2. Se não bloqueado, processa normalmente
+    if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
+        logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
+
+        try {
+            metadata.processingStarted = true;
+            metadata.isProcessing = true;
+            const messages = album_cache.get(albumKey) || [];
+            await enviarAlbumReenvioFixed(messages, destino);
+        } catch (error) {
+            logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
+            metadata.isProcessing = false;
+        } finally {
+            // Limpeza final
+            album_cache.delete(albumKey);
+            timeout_tasks.delete(albumKey);
+            album_metadata.delete(albumKey);
+        }
+    }
 }
-
 // No handler de timeout do buffer sem grupo:
 async function buffer_sem_group_timeout_handler_corrected(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -1366,23 +1412,53 @@ client.addEventHandler(async (event) => {
 
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
-
     if (message.groupedId) {
       const albumKey = `${chatId}_${message.groupedId}`;
-      
-      // Inicializar ou atualizar metadata do álbum
+      const txt = (message.caption ?? message.message ?? '').toLowerCase();
+
+      // Checa se o álbum já está bloqueado, ignora qualquer mensagem nova desse álbum
+      if (albuns_bloqueados.has(albumKey)) {
+        logWithTime(`⛔ Ignorando mensagem, álbum ${albumKey} já está bloqueado.`, chalk.red);
+        return;
+      }
+
+      // Se a mensagem for proibida, bloqueia o álbum e impede qualquer envio futuro dele
+      if (containsForbiddenPhrase(txt)) {
+        logWithTime(`❌ Mensagem de álbum contém frase proibida, bloqueando álbum ${albumKey}`, chalk.red);
+        albuns_bloqueados.add(albumKey);
+
+        // Remove o cache do álbum (se existir)
+        if (album_cache.has(albumKey)) album_cache.delete(albumKey);
+
+        // Cancela o timeout do álbum (se existir)
+        if (timeout_tasks.has(albumKey)) {
+          clearTimeout(timeout_tasks.get(albumKey));
+          timeout_tasks.delete(albumKey);
+        }
+
+        // Opcional: registra metadados do álbum bloqueado para fins de log
+        if (!album_metadata.has(albumKey)) {
+          initializeAlbumMetadata(albumKey, message.groupedId);
+          logWithTime(`📦 Novo álbum iniciado (bloqueado): ${albumKey}`, chalk.yellow);
+        }
+        updateAlbumMetadata(albumKey, message);
+
+        return;
+      }
+
+      // Fluxo normal: apenas entra aqui se não está bloqueado e não contém frase proibida
       if (!album_metadata.has(albumKey)) {
         initializeAlbumMetadata(albumKey, message.groupedId);
         logWithTime(`📦 Novo álbum iniciado: ${albumKey}`, chalk.yellow);
       }
-      
+
       const metadata = album_metadata.get(albumKey);
-      
-      // Atualizar o cache e metadata
+
+      // Atualizar cache e metadata
       if (!album_cache.has(albumKey)) {
         album_cache.set(albumKey, []);
       }
-      
+
       const messages = album_cache.get(albumKey);
       if (!messages.some(m => m.id === message.id)) {
         messages.push(message);
@@ -1396,24 +1472,12 @@ client.addEventHandler(async (event) => {
 
       // Configurar novo timeout
       const timeoutId = setTimeout(async () => {
-        // Verificação adicional antes de processar
-        if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
-          logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
-          
-          try {
-            metadata.processingStarted = true;
-            metadata.isProcessing = true;
-            await enviarAlbumReenvioFixed(messages, destino);
-          } catch (error) {
-            logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
-            metadata.isProcessing = false;
-          }
-        }
+          await album_timeout_handler_corrected(albumKey, destino);
       }, ALBUM_TIMEOUT);
 
-      timeout_tasks.set(albumKey, timeoutId);
-      return;
-    }
+    timeout_tasks.set(albumKey, timeoutId);
+    return;
+}
     
     // ... resto do código para mensagens individuais ...
 

@@ -32,6 +32,16 @@ const unwantedLogPatterns = [
   
   // Adicione mais padrões aqui se ainda aparecerem logs indesejados
 ];
+process.on('warning', (warning) => {
+  if (
+    warning.name === 'DeprecationWarning' &&
+    warning.message.includes('[node-telegram-bot-api] DeprecationWarning')
+  ) {
+    return; // Não exibe
+  }
+  // Outros warnings continuam aparecendo normalmente
+  console.warn(warning);
+});
 
 let disconnectLogged = false;
 
@@ -138,9 +148,15 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
+function extractTokenFromCaption(caption) {
+  const match = caption && caption.match(/#auth_token:([a-f0-9\-]+)/i);
+  return match ? match[1] : null;
+}
+
 function gerarToken() {
   return randomUUID();
 }
+
 function getFileOptions(filePath) {
   return {
     filename: path.basename(filePath),
@@ -741,7 +757,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       // Usa a legenda original da primeira mensagem não vazia para montar a editada
       const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
       const token = randomUUID();
-      authorizationTokens.add(token);
+      validTokens.add(token);
       const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage) + `\n\n#auth_token:${token}`;
 
       const mediaItems = validResults.map((r, idx) => ({
@@ -751,6 +767,16 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
         parse_mode: idx === 0 ? 'HTML' : undefined
       }));
 
+      // Verificação do token
+      const receivedToken = extractTokenFromCaption(mediaItems[0].caption);
+      if (!receivedToken || !validTokens.has(receivedToken)) {
+        logWithTime('⛔ Tentativa de envio de álbum sem token autorizado!', chalk.red);
+        cleanupAlbumResources(albumKey);
+        return;
+      }
+      validTokens.delete(receivedToken); // Remove o token após uso!
+
+      // Envia o álbum já com a legenda editada na primeira mídia
       logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
       await bot.sendMediaGroup(destino_id, mediaItems);
 

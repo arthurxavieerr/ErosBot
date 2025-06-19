@@ -71,6 +71,7 @@ import { NewMessage } from 'telegram/events/NewMessage.js';
 import TelegramBot from 'node-telegram-bot-api';
 import chalk from 'chalk';
 import mime from 'mime-types';
+import { randomUUID } from 'crypto';
 
 
 // === CONFIGURAÇÕES ===
@@ -136,6 +137,7 @@ const buffer_sem_group_tasks = new Map();
 const mensagens_processadas = new Set();
 const messageEditBuffer = new Map();
 const albuns_bloqueados = new Set();
+const validTokens = new Set();
 
 // === CRIAR PASTA DE DOWNLOADS ===
 if (!fsSync.existsSync(DOWNLOADS_PATH)) {
@@ -143,6 +145,9 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
+function gerarToken() {
+  return randomUUID();
+}
 function getFileOptions(filePath) {
   return {
     filename: path.basename(filePath),
@@ -181,6 +186,7 @@ function monitorActiveAlbums() {
     if (activeAlbums.length === 0) return;
     
     for (const [albumKey, metadata] of activeAlbums) {
+      if (albuns_bloqueados.has(albumKey)) continue;
       const messages = album_cache.get(albumKey) || [];
       const timeElapsed = Date.now() - metadata.lastUpdateTime;
       
@@ -642,185 +648,6 @@ async function processMessageEditing(editKey) {
   }
 }
 
-// === ENVIO DE ÁLBUM COM LEGENDAS ORIGINAIS (CORRIGIDO) ===
-async function enviarAlbumReenvio(mensagens, destino_id) {
-  if (!mensagens.length) return;
-
-  logWithTime(`📦 Preparando álbum para reenvio com ${mensagens.length} mensagens`, chalk.blue);
-  
-  if (albumContainsForbiddenPhrase(mensagens)) {
-    logWithTime(`❌ ÁLBUM BLOQUEADO: Contém frase proibida. Nenhuma mensagem será enviada.`, chalk.red);
-    for (const m of mensagens) {
-      mensagens_processadas.add(m.id);
-    }
-    return;
-  }
-
-  mensagens.sort((a, b) => a.id - b.id);
-  
-  const downloadPromises = [];
-  const validMessages = [];
-  const originalCaptions = [];
-  
-  for (const [index, msg] of mensagens.entries()) {
-    if (mensagens_processadas.has(msg.id)) continue;
-    
-    if (!msg.media) {
-      logWithTime(`⚠️ Mensagem ${msg.id} sem mídia, pulando...`, chalk.yellow);
-      continue;
-    }
-
-    validMessages.push(msg);
-    
-    // CRÍTICO: Armazenar a legenda original SEM modificações
-    const legendaOriginal = msg.caption ?? msg.message ?? '';
-    originalCaptions.push(legendaOriginal);
-    logWithTime(`📝 Armazenando legenda original ${index}: "${legendaOriginal.substring(0, 50)}..."`, chalk.cyan);
-    
-    const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
-    
-    const downloadPromise = downloadMediaWithRetry(msg, filename).then(filePath => {
-      if (filePath) {
-        const mediaType = detectMediaType(filePath);
-        const mediaItem = {
-          type: mediaType === 'photo' ? 'photo' : (mediaType === 'video' ? 'video' : 'document'),
-          media: filePath
-        };
-
-        return { 
-          messageId: msg.id, 
-          mediaItem, 
-          filePath, 
-          originalCaption: legendaOriginalPura // Garantir que seja a legenda original
-        };
-      }
-      return null;
-    });
-    downloadPromises.push(downloadPromise);
-    mensagens_processadas.add(msg.id);
-  }
-
-  if (downloadPromises.length === 0) {
-    logWithTime('❌ Nenhuma mídia válida encontrada no álbum', chalk.red);
-    return;
-  }
-
-  const results = await Promise.all(downloadPromises);
-  const validResults = results.filter(r => r !== null);
-
-  // NOVA CHECAGEM: só envie se TODAS as mídias foram baixadas!
-  if (validResults.length !== mensagens.length) {
-    logWithTime(
-      `❌ [FALHA DE ÁLBUM] Envio abortado: mídias baixadas (${validResults.length}) < esperado (${mensagens.length}).`,
-      chalk.red
-    );
-    // Opcional: colocar o álbum de volta no cache para tentar novamente depois
-    // album_cache.set(albumKey, mensagens);
-    return;
-  }
-  try {
-    if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.mediaItem.type))) {
-      // Pegue a primeira legenda não-vazia do álbum (de qualquer posição!)
-      // Antes de mapear os mediaItems, defina a legenda a ser usada:
-      const legendaParaUsar = originalCaptionsArray.find(
-        caption => caption && caption.trim() !== ""
-      ) || "";
-      // Em seguida, construa mediaItems, aplicando a legenda só no primeiro item:
-      const mediaItems = validResults.map((r, idx) => {
-        const item = {
-          type: r.mediaItem.type,
-          media: r.mediaItem.media
-        };
-        if (idx === 0 && legendaParaUsar) {
-          item.caption = aplicarTransformacoes(legendaParaUsar);
-          item.parse_mode = 'HTML';
-          logWithTime(`📝  Primeira mídia do álbum terá legenda:`, chalk.cyan);
-          logWithTime(`🪧  "${item.caption.substring(0, 100)}..."`, chalk.magenta);
-        }
-        return item;
-      });
-      // ...
-      logWithTime(`📤 Enviando álbum com ${mediaItems.length} mídias`, chalk.green);
-      
-      const result = await bot.sendMediaGroup(destino_id, mediaItems);
-      
-      if (isEditActive && result && result.length > 0) {
-        logWithTime(`📝 Agendando edição para álbum - Legendas originais: ${originalCaptions.length}`, chalk.blue);
-        logWithTime(`DEBUG: result = ${JSON.stringify(result, null, 2)}`, chalk.yellow);
-        logWithTime(`DEBUG: originalCaptions = ${JSON.stringify(originalCaptions, null, 2)}`, chalk.yellow);
-        scheduleMessageEditingFixed(destino_id, result, originalCaptions);
-      }
-      
-      logWithTime(`✅ Álbum enviado com sucesso`, chalk.green);
-      
-    } else {
-      logWithTime(`📤 Enviando ${validResults.length} mídias individualmente`, chalk.yellow);
-      
-      const sentMessages = [];
-      for (const [index, result] of validResults.entries()) {
-        const originalCaption = originalCaptions[index] || '';
-        logWithTime(`📤 Enviando mídia individual ${index + 1} com legenda original: "${originalCaption.substring(0, 50)}..."`, chalk.blue);
-        
-        const sentMsg = await enviarMidiaComLegendaOriginal(result.filePath, originalCaption, destino_id, result.mediaItem.type);
-        
-        if (sentMsg) {
-          sentMessages.push({ message: sentMsg });
-        }
-        
-        if (index < validResults.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-      
-      if (isEditActive && sentMessages.length > 0) {
-        logWithTime(`📝 Agendando edição para ${sentMessages.length} mensagens individuais`, chalk.blue);
-        scheduleMessageEditing(destino_id, sentMessages, originalCaptions);
-      }
-      
-      logWithTime(`✅ Todas as mídias enviadas individualmente`, chalk.green);
-    }
-    
-    // Limpar arquivos temporários
-    for (const result of validResults) {
-      try {
-        await fs.unlink(result.filePath);
-      } catch (e) {
-        logWithTime(`⚠️ Erro ao deletar arquivo temporário: ${e.message}`, chalk.yellow);
-      }
-    }
-    
-  } catch (error) {
-    logWithTime(`❌ Erro ao enviar álbum: ${error.message}`, chalk.red);
-    
-    logWithTime('🔄 Tentando envio individual como fallback...', chalk.yellow);
-    
-    const sentMessages = [];
-    for (const [index, result] of validResults.entries()) {
-      try {
-        const originalCaption = originalCaptions[index] || '';
-        const sentMsg = await enviarMidiaComLegendaOriginal(result.filePath, originalCaption, destino_id);
-        if (sentMsg) {
-          sentMessages.push({ message: sentMsg });
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (individualErr) {
-        logWithTime(`❌ Erro ao enviar mídia individual: ${individualErr.message}`, chalk.red);
-      }
-    }
-    
-    if (isEditActive && sentMessages.length > 0) {
-      scheduleMessageEditing(destino_id, sentMessages, originalCaptions);
-    }
-    
-    // Limpar arquivos temporários do fallback
-    for (const result of validResults) {
-      try {
-        await fs.unlink(result.filePath);
-      } catch (e) {}
-    }
-  }
-}
-
 // === ENVIO DE MÍDIA INDIVIDUAL (CORRIGIDA) ===
 async function enviarMidiaIndividual(mensagem, destino_id) {
   if (mensagens_processadas.has(mensagem.id)) return;
@@ -913,22 +740,6 @@ function getFileExtension(message) {
   return 'bin';
 }
 
-// Continuação da função album_timeout_handler
-async function album_timeout_handler(albumKey, destino) {
-  const msgs = album_cache.get(albumKey) || [];
-  album_cache.delete(albumKey);
-  timeout_tasks.delete(albumKey);
-
-  if (msgs.length === 0) return;
-
-  logWithTime(`📦 Processando álbum com ${msgs.length} mensagens (albumKey: ${albumKey})`, chalk.blue);
-  
-  try {
-    await enviarAlbumReenvio(msgs, destino);
-  } catch (error) {
-    logWithTime(`❌ Erro no processamento do álbum: ${error.message}`, chalk.red);
-  }
-}
 
 async function buffer_sem_group_timeout_handler(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -1223,7 +1034,9 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.type))) {
       // Usa a legenda original da primeira mensagem não vazia para montar a editada
       const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
-      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
+      const token = randomUUID();
+      authorizationTokens.add(token);
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage) + `\n\n#auth_token:${token}`;
 
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
@@ -1435,14 +1248,6 @@ client.addEventHandler(async (event) => {
           clearTimeout(timeout_tasks.get(albumKey));
           timeout_tasks.delete(albumKey);
         }
-
-        // Opcional: registra metadados do álbum bloqueado para fins de log
-        if (!album_metadata.has(albumKey)) {
-          initializeAlbumMetadata(albumKey, message.groupedId);
-          logWithTime(`📦 Novo álbum iniciado (bloqueado): ${albumKey}`, chalk.yellow);
-        }
-        updateAlbumMetadata(albumKey, message);
-
         return;
       }
 

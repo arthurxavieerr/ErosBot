@@ -148,6 +148,7 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
+
 function extractTokenFromCaption(caption) {
   const match = caption && caption.match(/#auth_token:([a-f0-9\-]+)/i);
   return match ? match[1] : null;
@@ -756,9 +757,10 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.type))) {
       // Usa a legenda original da primeira mensagem não vazia para montar a editada
       const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
-      const token = randomUUID();
-      validTokens.add(token);
-      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage) + `\n\n#auth_token:${token}`;
+      const token = randomUUID();            // 1. gera o token
+      validTokens.add(token);                // 1. salva internamente (pode manter isso se usa em mais de um álbum)
+      metadata.token = token;                // 2. associa ao álbum (em metadata, por exemplo)
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage); // NÃO adiciona o token na legenda!
 
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
@@ -1442,18 +1444,30 @@ process.on('uncaughtException', (error) => {
 });
 
 // === INICIALIZAÇÃO E LOGS DE STARTUP ===
+const groupNameCache = new Map();
+
+async function getGroupTitleById(chatId) {
+  if (groupNameCache.has(chatId)) return groupNameCache.get(chatId);
+  try {
+    // Remove o prefixo -100 se existir
+    const cleanId = chatId.startsWith("-100") ? chatId.slice(4) : chatId.replace("-", "");
+    const entity = await client.getEntity(BigInt(cleanId));
+    const title = entity.title || entity.firstName || entity.username || "Sem nome";
+    groupNameCache.set(chatId, title);
+    return title;
+  } catch (e) {
+    return "ID " + chatId;
+  }
+}
 async function iniciarBot() {
   try {
     logWithTime('🚀 Iniciando bot de repasse...', chalk.cyan);
-    
+
     // Verificar configurações essenciais
     if (Object.keys(PARES_REPASSE).length === 0) {
       logWithTime('⚠️ Nenhum par de repasse configurado!', chalk.yellow);
     } else {
       logWithTime(`📋 ${Object.keys(PARES_REPASSE).length} pares de repasse configurados`, chalk.blue);
-      for (const [origem, destino] of Object.entries(PARES_REPASSE)) {
-        logWithTime(`ℹ️  ${origem} → ${destino}`, chalk.blue);
-      }
     }
     
     // Conectar cliente Telegram
@@ -1464,9 +1478,17 @@ async function iniciarBot() {
       phoneCode: async () => await input.text('Digite o código recebido: '),
       onError: (err) => logWithTime(`❌ Erro de conexão: ${err.message}`, chalk.red),
     });
-    
+
     logWithTime('👤 Cliente Telegram conectado!', chalk.green);
-    
+
+    // Agora sim: busca nomes dos grupos e loga corretamente
+    const pares = Object.entries(PARES_REPASSE);
+    await Promise.all(pares.map(async ([origem, destino]) => {
+      const origemNome = await getGroupTitleById(origem);
+      const destinoNome = await getGroupTitleById(destino);
+      logWithTime(`ℹ️  ${origemNome} (${origem}) → ${destinoNome} (${destino})`, chalk.blue);
+    }));
+
     // Inicializar bot
     logWithTime('🤖 Inicializando bot de edição de legenda...', chalk.blue);
     

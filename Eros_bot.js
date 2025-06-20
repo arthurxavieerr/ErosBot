@@ -761,6 +761,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       metadata.token = token;                // 2. associa ao álbum (em metadata, por exemplo)
       const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage); // NÃO adiciona o token na legenda!
 
+
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
         media: r.filePath,
@@ -779,6 +780,16 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       // Envia o álbum já com a legenda editada na primeira mídia
       logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
       await bot.sendMediaGroup(destino_id, mediaItems);
+
+      // Limpa todos os arquivos temporários usados no álbum
+      for (const r of validResults) {
+        try {
+          await fs.unlink(r.filePath);
+          logWithTime(`🧹 Arquivo temporário removido: ${r.filePath}`, chalk.yellow);
+        } catch (e) {
+          logWithTime(`⚠️ Erro ao remover arquivo temporário: ${e.message}`, chalk.yellow);
+        }
+      }
 
       logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
       cleanupAlbumResources(albumKey);

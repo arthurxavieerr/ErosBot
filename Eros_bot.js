@@ -676,7 +676,7 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
     const tipo = mediaType || detectMediaType(filePath);
     
     // CORREÇÃO CRÍTICA: Garantir que a legenda original seja preservada exatamente como está
-    const legendaOriginalPura = mensagem.caption ?? mensagem.message ?? '';
+    const legendaOriginalPura = originalCaption ?? '';
     
     logWithTime(`📤 Enviando mídia`, chalk.blue);
     logWithTime(`📝 Legenda original preservada: "${legendaOriginalPura.substring(0, 50)}..."`, chalk.cyan);

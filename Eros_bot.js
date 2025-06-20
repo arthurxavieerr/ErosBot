@@ -140,6 +140,7 @@ const mensagens_processadas = new Set();
 const messageEditBuffer = new Map();
 const albuns_bloqueados = new Set();
 const validTokens = new Set();
+const processingAlbums = new Set();
 
 // === CRIAR PASTA DE DOWNLOADS ===
 if (!fsSync.existsSync(DOWNLOADS_PATH)) {
@@ -236,10 +237,7 @@ function isAlbumComplete(albumKey) {
   const messages = album_cache.get(albumKey) || [];
   const timeElapsed = Date.now() - metadata.lastUpdateTime;
   
-  // Aumentar o tempo mínimo de espera para garantir que todas as mensagens cheguem
-  const MIN_WAIT_TIME = 60000; // 5 segundos mínimo de espera
-  
-  // NOVA VERIFICAÇÃO: Garantir que temos todas as mídias do mesmo tipo juntas
+  // Análise dos tipos de mídia no álbum
   const mediaTypes = new Set(messages.map(msg => {
     if (msg.media?.photo) return 'photo';
     if (msg.media?.document) {
@@ -250,30 +248,57 @@ function isAlbumComplete(albumKey) {
     return 'unknown';
   }));
 
-  // Se tivermos fotos e vídeos misturados, aguardar mais tempo
-  const hasMixedTypes = mediaTypes.size > 1;
-  const MIXED_TYPES_WAIT = hasMixedTypes ? 60000 : MIN_WAIT_TIME; // 60 segundos para tipos mistos
+  // Tempos de espera específicos para diferentes situações
+  const BASE_WAIT_TIME = 20000;  // 20 segundos base
+  const MIXED_TYPES_WAIT = 20000; // 20 segundos para tipos mistos
+  const PHOTO_ONLY_WAIT = 20000;  // 20 segundos para apenas fotos
   
-  // Verificar se as mensagens estão em sequência
+  const hasMixedTypes = mediaTypes.size > 1;
+  const isPhotoOnly = mediaTypes.size === 1 && mediaTypes.has('photo');
+  
+  // Define o tempo de espera baseado no tipo de conteúdo
+  const requiredWaitTime = hasMixedTypes ? MIXED_TYPES_WAIT : 
+                          isPhotoOnly ? PHOTO_ONLY_WAIT : 
+                          BASE_WAIT_TIME;
+
+  // Verifica sequência de IDs
   const messageIds = messages.map(m => m.id).sort((a, b) => a - b);
   const isSequential = messageIds.every((id, index) => {
     if (index === 0) return true;
     return (id - messageIds[index - 1]) === 1;
   });
 
-  // Condições para considerar o álbum completo
-  const hasEnoughWaitTime = timeElapsed >= MIXED_TYPES_WAIT;
+  // Condições adicionais para álbuns com fotos
   const hasMinimumMessages = messages.length >= 2;
-  const isStable = timeElapsed >= (messages.length * 15000); // 1 segundo por mensagem
+  const isStable = timeElapsed >= (messages.length * 15000); // 15 segundo por mensagem
+  const hasEnoughWaitTime = timeElapsed >= requiredWaitTime;
 
-  // Log detalhado do status
-  logWithTime(`🔍 Verificando completude do álbum ${albumKey}:
+  // Log detalhado
+  logWithTime(`🔍 Verificação detalhada do álbum ${albumKey}:
     • Mensagens: ${messages.length}
-    • Tipos de mídia: ${Array.from(mediaTypes).join(', ')}
+    • Tipos: ${Array.from(mediaTypes).join(', ')}
     • Tempo decorrido: ${timeElapsed}ms
+    • Tempo requerido: ${requiredWaitTime}ms
     • Sequencial: ${isSequential}
-    • Tempo mínimo: ${hasEnoughWaitTime}
-    • Estável: ${isStable}`, chalk.blue);
+    • Estável: ${isStable}
+    • Misto: ${hasMixedTypes}
+    • Apenas fotos: ${isPhotoOnly}`, chalk.blue);
+
+  // Se for álbum misto ou apenas fotos, adiciona verificações extras
+  if (hasMixedTypes || isPhotoOnly) {
+    const allMediaLoaded = messages.every(msg => {
+      if (msg.media?.photo) return true;
+      if (msg.media?.document) {
+        return msg.media.document.size > 0;
+      }
+      return false;
+    });
+
+    if (!allMediaLoaded) {
+      logWithTime(`⚠️ Álbum ${albumKey}: Aguardando carregamento completo das mídias`, chalk.yellow);
+      return false;
+    }
+  }
 
   return hasEnoughWaitTime && hasMinimumMessages && isSequential && isStable;
 }
@@ -770,6 +795,14 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
         return;
       }
 
+      // Verificação adicional: garantir que não está sendo enviado duplicado
+      if (metadata.sent) {
+        logWithTime(`⏩ Álbum ${albumKey} já foi enviado previamente, ignorando duplicação.`, chalk.yellow);
+        cleanupAlbumResources(albumKey);
+        return;
+      }
+      metadata.sent = true;
+
       const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
 
       const mediaItems = validResults.map((r, idx) => ({
@@ -916,12 +949,20 @@ async function album_timeout_handler_corrected(albumKey, destino) {
         album_cache.delete(albumKey);
         album_metadata.delete(albumKey);
         timeout_tasks.delete(albumKey);
+        processingAlbums.delete(albumKey); // Garante limpeza
         return;
     }
 
-    // 2. Se não bloqueado, processa normalmente
+    // 2. Proteção contra processamento duplicado
+    if (processingAlbums.has(albumKey)) {
+        logWithTime(`⏳ Álbum ${albumKey} já está sendo processado, ignorando chamada duplicada.`, chalk.yellow);
+        return;
+    }
+
+    // 3. Se não bloqueado, processa normalmente
     if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
         logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
+        processingAlbums.add(albumKey);
 
         try {
             metadata.processingStarted = true;
@@ -936,9 +977,11 @@ async function album_timeout_handler_corrected(albumKey, destino) {
             album_cache.delete(albumKey);
             timeout_tasks.delete(albumKey);
             album_metadata.delete(albumKey);
+            processingAlbums.delete(albumKey);
         }
     }
 }
+
 // No handler de timeout do buffer sem grupo:
 async function buffer_sem_group_timeout_handler_corrected(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -973,6 +1016,8 @@ client.addEventHandler(async (event) => {
 
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
+
+    // --- CORREÇÃO FUNDAMENTAL: se groupedId está presente, NÃO processe individualmente ---
     if (message.groupedId) {
       const albumKey = `${chatId}_${message.groupedId}`;
       const txt = (message.caption ?? message.message ?? '').toLowerCase();
@@ -1025,14 +1070,15 @@ client.addEventHandler(async (event) => {
 
       // Configurar novo timeout
       const timeoutId = setTimeout(async () => {
-          await album_timeout_handler_corrected(albumKey, destino);
+        await album_timeout_handler_corrected(albumKey, destino);
       }, ALBUM_TIMEOUT);
 
-    timeout_tasks.set(albumKey, timeoutId);
-    return;
-}
-    
-    // ... resto do código para mensagens individuais ...
+      timeout_tasks.set(albumKey, timeoutId);
+      return; // <-- ESSA LINHA É FUNDAMENTAL! Impede processamento individual
+    }
+
+    // --- SÓ CHEGA AQUI SE NÃO FOR ÁLBUM ---
+    await enviarMidiaIndividualFixed(message, destino);
 
   } catch (error) {
     logWithTime(`❌ Erro no evento de nova mensagem: ${error.message}`, chalk.red);

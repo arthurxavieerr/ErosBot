@@ -237,7 +237,7 @@ function isAlbumComplete(albumKey) {
   const timeElapsed = Date.now() - metadata.lastUpdateTime;
   
   // Aumentar o tempo mínimo de espera para garantir que todas as mensagens cheguem
-  const MIN_WAIT_TIME = 5000; // 5 segundos mínimo de espera
+  const MIN_WAIT_TIME = 60000; // 5 segundos mínimo de espera
   
   // NOVA VERIFICAÇÃO: Garantir que temos todas as mídias do mesmo tipo juntas
   const mediaTypes = new Set(messages.map(msg => {
@@ -252,7 +252,7 @@ function isAlbumComplete(albumKey) {
 
   // Se tivermos fotos e vídeos misturados, aguardar mais tempo
   const hasMixedTypes = mediaTypes.size > 1;
-  const MIXED_TYPES_WAIT = hasMixedTypes ? 10000 : MIN_WAIT_TIME; // 10 segundos para tipos mistos
+  const MIXED_TYPES_WAIT = hasMixedTypes ? 60000 : MIN_WAIT_TIME; // 60 segundos para tipos mistos
   
   // Verificar se as mensagens estão em sequência
   const messageIds = messages.map(m => m.id).sort((a, b) => a - b);
@@ -264,7 +264,7 @@ function isAlbumComplete(albumKey) {
   // Condições para considerar o álbum completo
   const hasEnoughWaitTime = timeElapsed >= MIXED_TYPES_WAIT;
   const hasMinimumMessages = messages.length >= 2;
-  const isStable = timeElapsed >= (messages.length * 1000); // 1 segundo por mensagem
+  const isStable = timeElapsed >= (messages.length * 15000); // 1 segundo por mensagem
 
   // Log detalhado do status
   logWithTime(`🔍 Verificando completude do álbum ${albumKey}:
@@ -703,8 +703,6 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
   const firstMsg = mensagens[0];
   const chatId = extractChatId(firstMsg);
   const albumKey = `${chatId}_${firstMsg.groupedId}`;
-
-  // Verificar metadata
   const metadata = album_metadata.get(albumKey);
   if (!metadata) {
     logWithTime(`❌ Tentativa de envio de álbum sem metadata: ${albumKey}`, chalk.red);
@@ -756,11 +754,23 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.type))) {
       // Usa a legenda original da primeira mensagem não vazia para montar a editada
       const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
-      const token = randomUUID();            // 1. gera o token
-      validTokens.add(token);                // 1. salva internamente (pode manter isso se usa em mais de um álbum)
-      metadata.token = token;                // 2. associa ao álbum (em metadata, por exemplo)
-      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage); // NÃO adiciona o token na legenda!
 
+      // === ALTERAÇÃO: Gera o token SÓ SE NÃO EXISTE, associa no metadata ===
+      if (!metadata.token) {
+        const token = randomUUID();
+        metadata.token = token;
+        validTokens.add(token);
+        logWithTime(`🔒 Token de permissão criado para o álbum ${albumKey}: ${token}`, chalk.cyan);
+      }
+
+      // === ALTERAÇÃO: Verificação 100% INTERNA do token ===
+      if (!metadata.token || !validTokens.has(metadata.token)) {
+        logWithTime('⛔ Tentativa de envio de álbum sem token de permissão!', chalk.red);
+        cleanupAlbumResources(albumKey);
+        return;
+      }
+
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
 
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
@@ -768,14 +778,6 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
         caption: idx === 0 ? legendaEditada : undefined,
         parse_mode: idx === 0 ? 'HTML' : undefined
       }));
-
-      // Verificação do token
-      if (!metadata.token || !validTokens.has(metadata.token)) {
-        logWithTime('⛔ Tentativa de envio de álbum sem token autorizado!', chalk.red);
-        cleanupAlbumResources(albumKey);
-        return;
-      }
-      validTokens.delete(metadata.token);
 
       // Envia o álbum já com a legenda editada na primeira mídia
       logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
@@ -790,6 +792,9 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
           logWithTime(`⚠️ Erro ao remover arquivo temporário: ${e.message}`, chalk.yellow);
         }
       }
+
+      // === ALTERAÇÃO: Remove o token após o uso ===
+      validTokens.delete(metadata.token);
 
       logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
       cleanupAlbumResources(albumKey);

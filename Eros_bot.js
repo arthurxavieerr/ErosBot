@@ -811,7 +811,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
       }
       metadata.sent = true;
 
-      const legendaEditada = `${createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage)}\n\n[ORIGEM: ${origem}]`;
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
 
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
@@ -842,10 +842,10 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
     } else {
       // Envia individualmente, já com legenda transformada/formatada
       for (const item of validResults) {
-      const legendaEditada = createEditedCaptionFixed(item.caption, fixedMessage);
-      await enviarMidiaComLegendaOriginalFixed(filePath, legendaEditada, destino_id, item.type, origem);
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+        const legendaEditada = createEditedCaptionFixed(item.caption, fixedMessage);
+        await enviarMidiaComLegendaOriginalFixed(item.filePath, legendaEditada, destino_id, item.type, origem);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
       cleanupAlbumResources(albumKey);
     }
 
@@ -932,7 +932,7 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id, origem = 'enviar
     logWithTime(`📝 Legenda original: "${originalCaptionPura.substring(0, 50)}..."`, chalk.cyan);
     
     // Enviar com legenda ORIGINAL (com transformações apenas)
-    const sentResult = await enviarMidiaComLegendaOriginalFixed(filePath, originalCaptionPura, destino_id, item.type, origem);
+    const sentResult = await enviarMidiaComLegendaOriginalFixed(filePath, originalCaptionPura, destino_id, undefined, origem);
     
     if (sentResult && sentResult.result && isEditActive) {
       logWithTime(`📅 Agendando edição para mídia individual`, chalk.blue);

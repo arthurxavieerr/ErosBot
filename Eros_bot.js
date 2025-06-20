@@ -148,6 +148,12 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
+function logEnvioMidia(origem, tipo, mensagem, extra = '') {
+  const mid = mensagem?.id ?? mensagem?.message_id ?? 'SEM_ID';
+  const gid = mensagem?.groupedId ? ` | groupedId: ${mensagem.groupedId}` : '';
+  const chat = extractChatId(mensagem) ?? 'SEM_CHAT';
+  logWithTime(`🚚 [ORIGEM: ${origem}] [${tipo}] Enviando mídia id: ${mid}${gid} | chat: ${chat} ${extra}`, chalk.magenta);
+}
 
 function extractTokenFromCaption(caption) {
   const match = caption && caption.match(/#auth_token:([a-f0-9\-]+)/i);
@@ -664,7 +670,8 @@ function scheduleMessageEditingFixed(chatId, sentMessages, originalCaptions) {
 }
 
 // === CORREÇÃO: ENVIO DE MÍDIA COM LEGENDA ORIGINAL (GARANTINDO ARMAZENAMENTO CORRETO) ===
-async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, destino, mediaType = null) {
+async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, destino, mediaType = null, origem = 'enviarMidiaComLegendaOriginalFixed') {
+  logWithTime(`📤 [ORIGEM: ${origem}] Enviando mídia file: ${filePath}`, chalk.magenta);
   try {
     const tipo = mediaType || detectMediaType(filePath);
     
@@ -721,8 +728,9 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
 }
 
 // === CORREÇÃO: ENVIO DE ÁLBUM COM LEGENDAS ORIGINAIS (VERSÃO CORRIGIDA) ===
-async function enviarAlbumReenvioFixed(mensagens, destino_id) {
+async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAlbumReenvioFixed') {
   if (!mensagens.length) return;
+  logEnvioMidia(origem, 'ALBUM', mensagens[0], `(total de mídias: ${mensagens.length})`);
 
   // Extrair o albumKey da primeira mensagem
   const firstMsg = mensagens[0];
@@ -835,7 +843,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       // Envia individualmente, já com legenda transformada/formatada
       for (const item of validResults) {
         const legendaEditada = createEditedCaptionFixed(item.caption, fixedMessage);
-        await enviarMidiaComLegendaOriginalFixed(item.filePath, legendaEditada, destino_id, item.type);
+        await enviarMidiaComLegendaOriginalFixed(filePath, legendaEditada, destino_id, item.type, origem);
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       cleanupAlbumResources(albumKey);
@@ -867,7 +875,8 @@ function cleanupAlbumResources(albumKey) {
   }
 }
 // === CORREÇÃO: ENVIO DE MÍDIA INDIVIDUAL (VERSÃO CORRIGIDA) ===
-async function enviarMidiaIndividualFixed(mensagem, destino_id) {
+async function enviarMidiaIndividualFixed(mensagem, destino_id, origem = 'enviarMidiaIndividualFixed') {
+  logEnvioMidia(origem, 'INDIVIDUAL', mensagem);
   if (mensagens_processadas.has(mensagem.id)) return;
   
   const txt = (mensagem.caption ?? mensagem.message ?? '').toLowerCase();
@@ -968,7 +977,7 @@ async function album_timeout_handler_corrected(albumKey, destino) {
             metadata.processingStarted = true;
             metadata.isProcessing = true;
             const messages = album_cache.get(albumKey) || [];
-            await enviarAlbumReenvioFixed(messages, destino);
+            await enviarAlbumReenvioFixed(messages, destino, 'album_timeout_handler_corrected');
         } catch (error) {
             logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
             metadata.isProcessing = false;
@@ -996,7 +1005,7 @@ async function buffer_sem_group_timeout_handler_corrected(chatId) {
     const destino = PARES_REPASSE[chatId];
     if (destino) {
       try {
-        await enviarMidiaIndividualFixed(msg, destino); // Usar a versão corrigida
+        await enviarMidiaIndividualFixed(message, destino, 'EVENT_HANDLER');
         await new Promise(resolve => setTimeout(resolve, 500));
       } catch (error) {
         logWithTime(`❌ Erro ao processar mensagem individual: ${error.message}`, chalk.red);
@@ -1481,7 +1490,7 @@ process.on('SIGINT', async () => {
       if (destino && msgs.length > 0) {
         for (const msg of msgs) {
           try {
-            await enviarMidiaIndividualFixed(msg, destino);
+            await enviarMidiaIndividualFixed(msg, destino, 'buffer_sem_group_timeout_handler_corrected');
           } catch (error) {
             logWithTime(`❌ Erro ao processar mensagem pendente: ${error.message}`, chalk.red);
           }

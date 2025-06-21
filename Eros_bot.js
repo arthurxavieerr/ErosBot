@@ -95,9 +95,10 @@ const DOWNLOADS_PATH = './downloads';
 
 // === CONFIGURAÇÕES DO BOT DE REPASSE ===
 const PARES_REPASSE = {
-  '-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
-  '-1001161980965': '-1002519203567', // BARÃO > EROS
-  '-1002655206464': '-1002519203567', // CLONE > EROS
+  '-1001234567890': '-1009876543210',
+  '-1001161980965': '-1002519203567',
+  '-1001556868697': '-1002655206464',
+  '-1002655206464': '-1002519203567',
 };
 
 // Timeouts para buffers
@@ -129,64 +130,6 @@ let blacklist = loadJSON(BLACKLIST_PATH, []);
 if (!Array.isArray(blacklist)) blacklist = [];
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-// Coloque isso logo após criar o objeto `bot`
-
-const SEND_METHODS = [
-  "sendMessage",
-  "sendPhoto",
-  "sendVideo",
-  "sendDocument",
-  "sendAudio",
-  "sendMediaGroup",
-  "sendSticker",
-  "editMessageCaption",
-  "editMessageText",
-  "sendAnimation",
-  "sendVoice",
-  "sendVideoNote",
-  "sendLocation",
-  "sendContact",
-  "sendPoll",
-  "sendVenue",
-  // Adicione aqui outros métodos se necessário
-];
-
-// Função utilitária para pegar o nome da função chamadora (stack trace simples)
-function getCallerFunctionName() {
-  const old = Error.prepareStackTrace;
-  Error.prepareStackTrace = (_, stack) => stack;
-  const err = new Error();
-  const stack = err.stack;
-  Error.prepareStackTrace = old;
-  // stack[0] é getCallerFunctionName, stack[1] é o wrapper, stack[2] é quem chamou
-  if (stack && stack[2]) {
-    return stack[2].getFunctionName() || stack[2].getMethodName() || "desconhecido";
-  }
-  return "desconhecido";
-}
-
-for (const method of SEND_METHODS) {
-  if (typeof bot[method] === "function") {
-    const original = bot[method];
-    bot[method] = async function (...args) {
-      const caller = getCallerFunctionName();
-      logWithTime(
-        `🟢 bot.${method} chamado por [${caller}]\n→ chat_id: ${
-          args[0]?.chat_id || args[0]?.chatId || (typeof args[0] === "number" ? args[0] : "(não encontrado)")
-        }\n→ args: ${JSON.stringify(args.slice(0, 3))}`.substring(0, 500), // Evita log gigante
-        chalk.bgGreen.black
-      );
-      try {
-        const result = await original.apply(this, args);
-        logWithTime(`✅ bot.${method} enviado com sucesso`, chalk.green);
-        return result;
-      } catch (error) {
-        logWithTime(`❌ Erro em bot.${method}: ${error.message}`, chalk.red);
-        throw error;
-      }
-    };
-  }
-}
 
 // Buffers e controle
 const album_cache = new Map();
@@ -198,7 +141,6 @@ const mensagens_processadas = new Set();
 const messageEditBuffer = new Map();
 const albuns_bloqueados = new Set();
 const validTokens = new Set();
-const processingAlbums = new Set();
 
 // === CRIAR PASTA DE DOWNLOADS ===
 if (!fsSync.existsSync(DOWNLOADS_PATH)) {
@@ -206,12 +148,6 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
-function logEnvioMidia(origem, tipo, mensagem, extra = '') {
-  const mid = mensagem?.id ?? mensagem?.message_id ?? 'SEM_ID';
-  const gid = mensagem?.groupedId ? ` | groupedId: ${mensagem.groupedId}` : '';
-  const chat = extractChatId(mensagem) ?? 'SEM_CHAT';
-  logWithTime(`🚚 [ORIGEM: ${origem}] [${tipo}] Enviando mídia id: ${mid}${gid} | chat: ${chat} ${extra}`, chalk.magenta);
-}
 
 function extractTokenFromCaption(caption) {
   const match = caption && caption.match(/#auth_token:([a-f0-9\-]+)/i);
@@ -270,7 +206,7 @@ function monitorActiveAlbums() {
         • Status: ${metadata.isProcessing ? '🔄 Processando' : '⏳ Aguardando'}
         • Tentativas: ${metadata.attemptCount}`, chalk.blue);
     }
-  }, 120000); // A cada 2 minutos
+  }, 30000); // A cada 30 segundos
 }
 
 function updateAlbumMetadata(albumKey, message) {
@@ -301,7 +237,10 @@ function isAlbumComplete(albumKey) {
   const messages = album_cache.get(albumKey) || [];
   const timeElapsed = Date.now() - metadata.lastUpdateTime;
   
-  // Análise dos tipos de mídia no álbum
+  // Aumentar o tempo mínimo de espera para garantir que todas as mensagens cheguem
+  const MIN_WAIT_TIME = 5000; // 5 segundos mínimo de espera
+  
+  // NOVA VERIFICAÇÃO: Garantir que temos todas as mídias do mesmo tipo juntas
   const mediaTypes = new Set(messages.map(msg => {
     if (msg.media?.photo) return 'photo';
     if (msg.media?.document) {
@@ -312,57 +251,30 @@ function isAlbumComplete(albumKey) {
     return 'unknown';
   }));
 
-  // Tempos de espera específicos para diferentes situações
-  const BASE_WAIT_TIME = 20000;  // 20 segundos base
-  const MIXED_TYPES_WAIT = 20000; // 20 segundos para tipos mistos
-  const PHOTO_ONLY_WAIT = 20000;  // 20 segundos para apenas fotos
-  
+  // Se tivermos fotos e vídeos misturados, aguardar mais tempo
   const hasMixedTypes = mediaTypes.size > 1;
-  const isPhotoOnly = mediaTypes.size === 1 && mediaTypes.has('photo');
+  const MIXED_TYPES_WAIT = hasMixedTypes ? 10000 : MIN_WAIT_TIME; // 10 segundos para tipos mistos
   
-  // Define o tempo de espera baseado no tipo de conteúdo
-  const requiredWaitTime = hasMixedTypes ? MIXED_TYPES_WAIT : 
-                          isPhotoOnly ? PHOTO_ONLY_WAIT : 
-                          BASE_WAIT_TIME;
-
-  // Verifica sequência de IDs
+  // Verificar se as mensagens estão em sequência
   const messageIds = messages.map(m => m.id).sort((a, b) => a - b);
   const isSequential = messageIds.every((id, index) => {
     if (index === 0) return true;
     return (id - messageIds[index - 1]) === 1;
   });
 
-  // Condições adicionais para álbuns com fotos
+  // Condições para considerar o álbum completo
+  const hasEnoughWaitTime = timeElapsed >= MIXED_TYPES_WAIT;
   const hasMinimumMessages = messages.length >= 2;
-  const isStable = timeElapsed >= (messages.length * 15000); // 15 segundo por mensagem
-  const hasEnoughWaitTime = timeElapsed >= requiredWaitTime;
+  const isStable = timeElapsed >= (messages.length * 1000); // 1 segundo por mensagem
 
-  // Log detalhado
-  logWithTime(`🔍 Verificação detalhada do álbum ${albumKey}:
+  // Log detalhado do status
+  logWithTime(`🔍 Verificando completude do álbum ${albumKey}:
     • Mensagens: ${messages.length}
-    • Tipos: ${Array.from(mediaTypes).join(', ')}
+    • Tipos de mídia: ${Array.from(mediaTypes).join(', ')}
     • Tempo decorrido: ${timeElapsed}ms
-    • Tempo requerido: ${requiredWaitTime}ms
     • Sequencial: ${isSequential}
-    • Estável: ${isStable}
-    • Misto: ${hasMixedTypes}
-    • Apenas fotos: ${isPhotoOnly}`, chalk.blue);
-
-  // Se for álbum misto ou apenas fotos, adiciona verificações extras
-  if (hasMixedTypes || isPhotoOnly) {
-    const allMediaLoaded = messages.every(msg => {
-      if (msg.media?.photo) return true;
-      if (msg.media?.document) {
-        return msg.media.document.size > 0;
-      }
-      return false;
-    });
-
-    if (!allMediaLoaded) {
-      logWithTime(`⚠️ Álbum ${albumKey}: Aguardando carregamento completo das mídias`, chalk.yellow);
-      return false;
-    }
-  }
+    • Tempo mínimo: ${hasEnoughWaitTime}
+    • Estável: ${isStable}`, chalk.blue);
 
   return hasEnoughWaitTime && hasMinimumMessages && isSequential && isStable;
 }
@@ -728,8 +640,7 @@ function scheduleMessageEditingFixed(chatId, sentMessages, originalCaptions) {
 }
 
 // === CORREÇÃO: ENVIO DE MÍDIA COM LEGENDA ORIGINAL (GARANTINDO ARMAZENAMENTO CORRETO) ===
-async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, destino, mediaType = null, origem = 'enviarMidiaComLegendaOriginalFixed') {
-  logWithTime(`📤 [ORIGEM: ${origem}] Enviando mídia file: ${filePath}`, chalk.magenta);
+async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, destino, mediaType = null) {
   try {
     const tipo = mediaType || detectMediaType(filePath);
     
@@ -740,11 +651,11 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
     logWithTime(`📝 Legenda original preservada: "${legendaOriginalPura.substring(0, 50)}..."`, chalk.cyan);
     
     // Aplicar apenas transformações na legenda original (SEM adicionar mensagem fixa)
-    const legendaComOrigem = `${aplicarTransformacoes(legendaOriginalPura)}\n\n<code>[ORIGEM: ${origem}]</code>`;
-
+    const legendaComTransformacoes = aplicarTransformacoes(legendaOriginalPura);
+    
     const options = {
       chat_id: destino,
-      caption: legendaComOrigem,
+      caption: legendaComTransformacoes,
       parse_mode: 'HTML'
     };
 
@@ -786,42 +697,24 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
 }
 
 // === CORREÇÃO: ENVIO DE ÁLBUM COM LEGENDAS ORIGINAIS (VERSÃO CORRIGIDA) ===
-async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAlbumReenvioFixed') {
-  logWithTime(`Tentando enviar álbum ${albumKey} - mensagens: ${mensagens.length}, isAlbumComplete: ${isAlbumComplete(albumKey)}`, chalk.red);
+async function enviarAlbumReenvioFixed(mensagens, destino_id) {
   if (!mensagens.length) return;
-  logEnvioMidia(origem, 'ALBUM', mensagens[0], `(total de mídias: ${mensagens.length})`);
 
   // Extrair o albumKey da primeira mensagem
   const firstMsg = mensagens[0];
   const chatId = extractChatId(firstMsg);
   const albumKey = `${chatId}_${firstMsg.groupedId}`;
-  const metadata = album_metadata.get(albumKey);
 
-  // NOVO: Segurança máxima - impede envio duplicado, concorrente, e incompleto
+  // Verificar metadata
+  const metadata = album_metadata.get(albumKey);
   if (!metadata) {
     logWithTime(`❌ Tentativa de envio de álbum sem metadata: ${albumKey}`, chalk.red);
     return;
   }
-  if (metadata.sent) {
-    logWithTime(`⏩ Álbum ${albumKey} já foi enviado previamente, ignorando duplicação.`, chalk.yellow);
-    cleanupAlbumResources(albumKey);
-    return;
-  }
-  if (metadata.isProcessing || metadata.processingStarted) {
-    logWithTime(`⏳ Álbum ${albumKey} já está sendo processado, ignorando chamada duplicada.`, chalk.yellow);
-    return;
-  }
-  if (!isAlbumComplete(albumKey)) {
-    logWithTime(`⏳ Tentativa de envio de álbum incompleto (${albumKey}), abortando e aguardando mais mídias.`, chalk.red);
-    return;
-  }
-
-  // Marca como enviado e em processamento ANTES de processar (máxima segurança)
-  metadata.sent = true;
-  metadata.isProcessing = true;
-  metadata.processingStarted = true;
 
   try {
+    // Marcar como em processamento
+    metadata.isProcessing = true;
     metadata.attemptCount++;
 
     logWithTime(`📦 Preparando álbum para reenvio com ${mensagens.length} mensagens (Tentativa ${metadata.attemptCount})`, chalk.blue);
@@ -864,47 +757,30 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
     if (validResults.length > 1 && validResults.every(r => ['photo', 'video'].includes(r.type))) {
       // Usa a legenda original da primeira mensagem não vazia para montar a editada
       const legendaOriginalParaEditar = originalCaptions.find(c => c && c.trim() !== '') || '';
-
-      // === ALTERAÇÃO: Gera o token SÓ SE NÃO EXISTE, associa no metadata ===
-      if (!metadata.token) {
-        const token = randomUUID();
-        metadata.token = token;
-        validTokens.add(token);
-        logWithTime(`🔒 Token de permissão criado para o álbum ${albumKey}: ${token}`, chalk.cyan);
-      }
-
-      // === ALTERAÇÃO: Verificação 100% INTERNA do token ===
-      if (!metadata.token || !validTokens.has(metadata.token)) {
-        logWithTime('⛔ Tentativa de envio de álbum sem token de permissão!', chalk.red);
-        cleanupAlbumResources(albumKey);
-        return;
-      }
-
-      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
+      const token = randomUUID();            // 1. gera o token
+      validTokens.add(token);                // 1. salva internamente (pode manter isso se usa em mais de um álbum)
+      metadata.token = token;                // 2. associa ao álbum (em metadata, por exemplo)
+      const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage); // NÃO adiciona o token na legenda!
 
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
         media: r.filePath,
-        caption: idx === 0 ? `${legendaEditada}\n\n<code>[ORIGEM: ${origem}]</code>` : undefined,
+        caption: idx === 0 ? legendaEditada : undefined,
         parse_mode: idx === 0 ? 'HTML' : undefined
       }));
+
+      // Verificação do token
+      const receivedToken = extractTokenFromCaption(mediaItems[0].caption);
+      if (!receivedToken || !validTokens.has(receivedToken)) {
+        logWithTime('⛔ Tentativa de envio de álbum sem token autorizado!', chalk.red);
+        cleanupAlbumResources(albumKey);
+        return;
+      }
+      validTokens.delete(receivedToken); // Remove o token após uso!
 
       // Envia o álbum já com a legenda editada na primeira mídia
       logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
       await bot.sendMediaGroup(destino_id, mediaItems);
-
-      // Limpa todos os arquivos temporários usados no álbum
-      for (const r of validResults) {
-        try {
-          await fs.unlink(r.filePath);
-          logWithTime(`🧹 Arquivo temporário removido: ${r.filePath}`, chalk.yellow);
-        } catch (e) {
-          logWithTime(`⚠️ Erro ao remover arquivo temporário: ${e.message}`, chalk.yellow);
-        }
-      }
-
-      // === ALTERAÇÃO: Remove o token após o uso ===
-      validTokens.delete(metadata.token);
 
       logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
       cleanupAlbumResources(albumKey);
@@ -912,7 +788,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
       // Envia individualmente, já com legenda transformada/formatada
       for (const item of validResults) {
         const legendaEditada = createEditedCaptionFixed(item.caption, fixedMessage);
-        await enviarMidiaComLegendaOriginalFixed(item.filePath, legendaEditada, destino_id, item.type, origem);
+        await enviarMidiaComLegendaOriginalFixed(item.filePath, legendaEditada, destino_id, item.type);
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       cleanupAlbumResources(albumKey);
@@ -944,8 +820,7 @@ function cleanupAlbumResources(albumKey) {
   }
 }
 // === CORREÇÃO: ENVIO DE MÍDIA INDIVIDUAL (VERSÃO CORRIGIDA) ===
-async function enviarMidiaIndividualFixed(mensagem, destino_id, origem = 'enviarMidiaIndividualFixed') {
-  logEnvioMidia(origem, 'INDIVIDUAL', mensagem);
+async function enviarMidiaIndividualFixed(mensagem, destino_id) {
   if (mensagens_processadas.has(mensagem.id)) return;
   
   const txt = (mensagem.caption ?? mensagem.message ?? '').toLowerCase();
@@ -960,23 +835,19 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id, origem = 'enviar
       // CORREÇÃO CRÍTICA: Para mensagens de texto, armazenar o texto original
       const textoOriginalPuro = mensagem.message;
       const textoComTransformacoes = aplicarTransformacoes(textoOriginalPuro);
-
-      // Inclui a origem na mensagem, usando monoespaçado (HTML)
-      const textoComOrigem = `${textoComTransformacoes}\n\n<code>[ORIGEM: ${origem}]</code>`;
-
+      
       logWithTime(`💬 Enviando texto`, chalk.blue);
       logWithTime(`📝 Texto original: "${textoOriginalPuro.substring(0, 50)}..."`, chalk.cyan);
-
-      const result = await bot.sendMessage(destino_id, textoComOrigem, { parse_mode: 'HTML' });
-      logWithTime(`💬 [ORIGEM: ${origem}] Enviando texto ...`, chalk.magenta);
+      
+      const result = await bot.sendMessage(destino_id, textoComTransformacoes);
       mensagens_processadas.add(mensagem.id);
-
+      
       if (isEditActive && result) {
         logWithTime(`📝 Agendando edição para mensagem de texto`, chalk.blue);
         // Passar o texto ORIGINAL para edição
         scheduleMessageEditingFixed(destino_id, [{ message: result }], [textoOriginalPuro]);
       }
-
+      
       logWithTime(`✅ Mensagem de texto enviada`, chalk.green);
     } catch (error) {
       logWithTime(`❌ Erro ao enviar mensagem de texto: ${error.message}`, chalk.red);
@@ -1001,7 +872,7 @@ async function enviarMidiaIndividualFixed(mensagem, destino_id, origem = 'enviar
     logWithTime(`📝 Legenda original: "${originalCaptionPura.substring(0, 50)}..."`, chalk.cyan);
     
     // Enviar com legenda ORIGINAL (com transformações apenas)
-    const sentResult = await enviarMidiaComLegendaOriginalFixed(filePath, originalCaptionPura, destino_id, undefined, origem);
+    const sentResult = await enviarMidiaComLegendaOriginalFixed(filePath, originalCaptionPura, destino_id);
     
     if (sentResult && sentResult.result && isEditActive) {
       logWithTime(`📅 Agendando edição para mídia individual`, chalk.blue);
@@ -1031,50 +902,29 @@ async function album_timeout_handler_corrected(albumKey, destino) {
         album_cache.delete(albumKey);
         album_metadata.delete(albumKey);
         timeout_tasks.delete(albumKey);
-        processingAlbums.delete(albumKey); // Garante limpeza
         return;
     }
 
-    // 2. Proteção contra processamento duplicado global (processo em andamento)
-    if (processingAlbums.has(albumKey)) {
-        logWithTime(`⏳ Álbum ${albumKey} já está sendo processado, ignorando chamada duplicada.`, chalk.yellow);
-        return;
-    }
+    // 2. Se não bloqueado, processa normalmente
+    if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
+        logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
 
-    // 3. Proteção local: já está processando ou iniciou processamento
-    if (metadata.isProcessing || metadata.processingStarted) {
-        logWithTime(`⏳ Álbum ${albumKey} já está sendo processado.`, chalk.yellow);
-        return;
-    }
-
-    // 4. Checagem de completude: aguarde mais tempo se não estiver pronto
-    if (!isAlbumComplete(albumKey)) {
-        logWithTime(`⏳ Álbum ${albumKey} não está completo, adiando envio...`, chalk.yellow);
-        setTimeout(() => album_timeout_handler_corrected(albumKey, destino), 30000); // Reagende em 30s
-        return;
-    }
-
-    // 5. Agora sim, pode processar!
-    logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
-    processingAlbums.add(albumKey);
-
-    try {
-        metadata.processingStarted = true;
-        metadata.isProcessing = true;
-        const messages = album_cache.get(albumKey) || [];
-        await enviarAlbumReenvioFixed(messages, destino, 'album_timeout_handler_corrected');
-    } catch (error) {
-        logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
-        metadata.isProcessing = false;
-    } finally {
-        // Limpeza final após processamento
-        album_cache.delete(albumKey);
-        timeout_tasks.delete(albumKey);
-        album_metadata.delete(albumKey);
-        processingAlbums.delete(albumKey);
+        try {
+            metadata.processingStarted = true;
+            metadata.isProcessing = true;
+            const messages = album_cache.get(albumKey) || [];
+            await enviarAlbumReenvioFixed(messages, destino);
+        } catch (error) {
+            logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
+            metadata.isProcessing = false;
+        } finally {
+            // Limpeza final
+            album_cache.delete(albumKey);
+            timeout_tasks.delete(albumKey);
+            album_metadata.delete(albumKey);
+        }
     }
 }
-
 // No handler de timeout do buffer sem grupo:
 async function buffer_sem_group_timeout_handler_corrected(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -1089,7 +939,7 @@ async function buffer_sem_group_timeout_handler_corrected(chatId) {
     const destino = PARES_REPASSE[chatId];
     if (destino) {
       try {
-        await enviarMidiaIndividualFixed(message, destino, 'EVENT_HANDLER');
+        await enviarMidiaIndividualFixed(msg, destino); // Usar a versão corrigida
         await new Promise(resolve => setTimeout(resolve, 500));
       } catch (error) {
         logWithTime(`❌ Erro ao processar mensagem individual: ${error.message}`, chalk.red);
@@ -1109,8 +959,6 @@ client.addEventHandler(async (event) => {
 
     const destino = PARES_REPASSE[chatId];
     if (!destino) return;
-
-    // --- CORREÇÃO FUNDAMENTAL: se groupedId está presente, NÃO processe individualmente ---
     if (message.groupedId) {
       const albumKey = `${chatId}_${message.groupedId}`;
       const txt = (message.caption ?? message.message ?? '').toLowerCase();
@@ -1163,15 +1011,14 @@ client.addEventHandler(async (event) => {
 
       // Configurar novo timeout
       const timeoutId = setTimeout(async () => {
-        await album_timeout_handler_corrected(albumKey, destino);
+          await album_timeout_handler_corrected(albumKey, destino);
       }, ALBUM_TIMEOUT);
 
-      timeout_tasks.set(albumKey, timeoutId);
-      return; // <-- ESSA LINHA É FUNDAMENTAL! Impede processamento individual
-    }
-
-    // --- SÓ CHEGA AQUI SE NÃO FOR ÁLBUM ---
-    await enviarMidiaIndividualFixed(message, destino);
+    timeout_tasks.set(albumKey, timeoutId);
+    return;
+}
+    
+    // ... resto do código para mensagens individuais ...
 
   } catch (error) {
     logWithTime(`❌ Erro no evento de nova mensagem: ${error.message}`, chalk.red);
@@ -1574,7 +1421,7 @@ process.on('SIGINT', async () => {
       if (destino && msgs.length > 0) {
         for (const msg of msgs) {
           try {
-            await enviarMidiaIndividualFixed(msg, destino, 'buffer_sem_group_timeout_handler_corrected');
+            await enviarMidiaIndividualFixed(msg, destino);
           } catch (error) {
             logWithTime(`❌ Erro ao processar mensagem pendente: ${error.message}`, chalk.red);
           }
@@ -1599,33 +1446,19 @@ process.on('uncaughtException', (error) => {
 // === INICIALIZAÇÃO E LOGS DE STARTUP ===
 const groupNameCache = new Map();
 
-// Função robusta para pegar o nome de grupos/canais/usuários
 async function getGroupTitleById(chatId) {
   if (groupNameCache.has(chatId)) return groupNameCache.get(chatId);
   try {
-    let entity;
-    // Se for username (começa com @)
-    if (typeof chatId === 'string' && chatId.startsWith('@')) {
-      entity = await client.getEntity(chatId);
-    }
-    // Se for grupo/canal (-100...)
-    else if (typeof chatId === 'string' && chatId.startsWith('-100')) {
-      entity = await client.getEntity(BigInt(chatId));
-    }
-    // Se for outro número, tenta direto
-    else {
-      entity = await client.getEntity(chatId);
-    }
-    // Nome de canal/grupo/usuário
-    const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(' ') || entity.username || `ID ${chatId}`;
+    // Remove o prefixo -100 se existir
+    const cleanId = chatId.startsWith("-100") ? chatId.slice(4) : chatId.replace("-", "");
+    const entity = await client.getEntity(BigInt(cleanId));
+    const title = entity.title || entity.firstName || entity.username || "Sem nome";
     groupNameCache.set(chatId, title);
     return title;
   } catch (e) {
-    // Se der erro, retorna ID mesmo
-    return `ID ${chatId}`;
+    return "ID " + chatId;
   }
 }
-
 async function iniciarBot() {
   try {
     logWithTime('🚀 Iniciando bot de repasse...', chalk.cyan);
@@ -1747,4 +1580,3 @@ export {
   containsForbiddenPhrase,
   logWithTime
 };
-

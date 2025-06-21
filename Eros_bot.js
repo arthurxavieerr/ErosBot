@@ -129,6 +129,64 @@ let blacklist = loadJSON(BLACKLIST_PATH, []);
 if (!Array.isArray(blacklist)) blacklist = [];
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// Coloque isso logo após criar o objeto `bot`
+
+const SEND_METHODS = [
+  "sendMessage",
+  "sendPhoto",
+  "sendVideo",
+  "sendDocument",
+  "sendAudio",
+  "sendMediaGroup",
+  "sendSticker",
+  "editMessageCaption",
+  "editMessageText",
+  "sendAnimation",
+  "sendVoice",
+  "sendVideoNote",
+  "sendLocation",
+  "sendContact",
+  "sendPoll",
+  "sendVenue",
+  // Adicione aqui outros métodos se necessário
+];
+
+// Função utilitária para pegar o nome da função chamadora (stack trace simples)
+function getCallerFunctionName() {
+  const old = Error.prepareStackTrace;
+  Error.prepareStackTrace = (_, stack) => stack;
+  const err = new Error();
+  const stack = err.stack;
+  Error.prepareStackTrace = old;
+  // stack[0] é getCallerFunctionName, stack[1] é o wrapper, stack[2] é quem chamou
+  if (stack && stack[2]) {
+    return stack[2].getFunctionName() || stack[2].getMethodName() || "desconhecido";
+  }
+  return "desconhecido";
+}
+
+for (const method of SEND_METHODS) {
+  if (typeof bot[method] === "function") {
+    const original = bot[method];
+    bot[method] = async function (...args) {
+      const caller = getCallerFunctionName();
+      logWithTime(
+        `🟢 bot.${method} chamado por [${caller}]\n→ chat_id: ${
+          args[0]?.chat_id || args[0]?.chatId || (typeof args[0] === "number" ? args[0] : "(não encontrado)")
+        }\n→ args: ${JSON.stringify(args.slice(0, 3))}`.substring(0, 500), // Evita log gigante
+        chalk.bgGreen.black
+      );
+      try {
+        const result = await original.apply(this, args);
+        logWithTime(`✅ bot.${method} enviado com sucesso`, chalk.green);
+        return result;
+      } catch (error) {
+        logWithTime(`❌ Erro em bot.${method}: ${error.message}`, chalk.red);
+        throw error;
+      }
+    };
+  }
+}
 
 // Buffers e controle
 const album_cache = new Map();
@@ -729,6 +787,7 @@ async function enviarMidiaComLegendaOriginalFixed(filePath, originalCaption, des
 
 // === CORREÇÃO: ENVIO DE ÁLBUM COM LEGENDAS ORIGINAIS (VERSÃO CORRIGIDA) ===
 async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAlbumReenvioFixed') {
+  logWithTime(`Tentando enviar álbum ${albumKey} - mensagens: ${mensagens.length}, isAlbumComplete: ${isAlbumComplete(albumKey)}`, chalk.red);
   if (!mensagens.length) return;
   logEnvioMidia(origem, 'ALBUM', mensagens[0], `(total de mídias: ${mensagens.length})`);
 
@@ -737,14 +796,32 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
   const chatId = extractChatId(firstMsg);
   const albumKey = `${chatId}_${firstMsg.groupedId}`;
   const metadata = album_metadata.get(albumKey);
+
+  // NOVO: Segurança máxima - impede envio duplicado, concorrente, e incompleto
   if (!metadata) {
     logWithTime(`❌ Tentativa de envio de álbum sem metadata: ${albumKey}`, chalk.red);
     return;
   }
+  if (metadata.sent) {
+    logWithTime(`⏩ Álbum ${albumKey} já foi enviado previamente, ignorando duplicação.`, chalk.yellow);
+    cleanupAlbumResources(albumKey);
+    return;
+  }
+  if (metadata.isProcessing || metadata.processingStarted) {
+    logWithTime(`⏳ Álbum ${albumKey} já está sendo processado, ignorando chamada duplicada.`, chalk.yellow);
+    return;
+  }
+  if (!isAlbumComplete(albumKey)) {
+    logWithTime(`⏳ Tentativa de envio de álbum incompleto (${albumKey}), abortando e aguardando mais mídias.`, chalk.red);
+    return;
+  }
+
+  // Marca como enviado e em processamento ANTES de processar (máxima segurança)
+  metadata.sent = true;
+  metadata.isProcessing = true;
+  metadata.processingStarted = true;
 
   try {
-    // Marcar como em processamento
-    metadata.isProcessing = true;
     metadata.attemptCount++;
 
     logWithTime(`📦 Preparando álbum para reenvio com ${mensagens.length} mensagens (Tentativa ${metadata.attemptCount})`, chalk.blue);
@@ -802,14 +879,6 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id, origem = 'enviarAl
         cleanupAlbumResources(albumKey);
         return;
       }
-
-      // Verificação adicional: garantir que não está sendo enviado duplicado
-      if (metadata.sent) {
-        logWithTime(`⏩ Álbum ${albumKey} já foi enviado previamente, ignorando duplicação.`, chalk.yellow);
-        cleanupAlbumResources(albumKey);
-        return;
-      }
-      metadata.sent = true;
 
       const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage);
 
@@ -966,32 +1035,43 @@ async function album_timeout_handler_corrected(albumKey, destino) {
         return;
     }
 
-    // 2. Proteção contra processamento duplicado
+    // 2. Proteção contra processamento duplicado global (processo em andamento)
     if (processingAlbums.has(albumKey)) {
         logWithTime(`⏳ Álbum ${albumKey} já está sendo processado, ignorando chamada duplicada.`, chalk.yellow);
         return;
     }
 
-    // 3. Se não bloqueado, processa normalmente
-    if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
-        logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
-        processingAlbums.add(albumKey);
+    // 3. Proteção local: já está processando ou iniciou processamento
+    if (metadata.isProcessing || metadata.processingStarted) {
+        logWithTime(`⏳ Álbum ${albumKey} já está sendo processado.`, chalk.yellow);
+        return;
+    }
 
-        try {
-            metadata.processingStarted = true;
-            metadata.isProcessing = true;
-            const messages = album_cache.get(albumKey) || [];
-            await enviarAlbumReenvioFixed(messages, destino, 'album_timeout_handler_corrected');
-        } catch (error) {
-            logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
-            metadata.isProcessing = false;
-        } finally {
-            // Limpeza final
-            album_cache.delete(albumKey);
-            timeout_tasks.delete(albumKey);
-            album_metadata.delete(albumKey);
-            processingAlbums.delete(albumKey);
-        }
+    // 4. Checagem de completude: aguarde mais tempo se não estiver pronto
+    if (!isAlbumComplete(albumKey)) {
+        logWithTime(`⏳ Álbum ${albumKey} não está completo, adiando envio...`, chalk.yellow);
+        setTimeout(() => album_timeout_handler_corrected(albumKey, destino), 30000); // Reagende em 30s
+        return;
+    }
+
+    // 5. Agora sim, pode processar!
+    logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
+    processingAlbums.add(albumKey);
+
+    try {
+        metadata.processingStarted = true;
+        metadata.isProcessing = true;
+        const messages = album_cache.get(albumKey) || [];
+        await enviarAlbumReenvioFixed(messages, destino, 'album_timeout_handler_corrected');
+    } catch (error) {
+        logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
+        metadata.isProcessing = false;
+    } finally {
+        // Limpeza final após processamento
+        album_cache.delete(albumKey);
+        timeout_tasks.delete(albumKey);
+        album_metadata.delete(albumKey);
+        processingAlbums.delete(albumKey);
     }
 }
 

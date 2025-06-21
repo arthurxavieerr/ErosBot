@@ -95,10 +95,9 @@ const DOWNLOADS_PATH = './downloads';
 
 // === CONFIGURAÇÕES DO BOT DE REPASSE ===
 const PARES_REPASSE = {
-  '-1001234567890': '-1009876543210',
-  '-1001161980965': '-1002519203567',
-  '-1001556868697': '-1002655206464',
-  '-1002655206464': '-1002519203567',
+  '-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
+  '-1001161980965': '-1002519203567', // BARÃO > EROS
+  '-1002655206464': '-1002519203567', // CLONE > EROS
 };
 
 // Timeouts para buffers
@@ -206,7 +205,7 @@ function monitorActiveAlbums() {
         • Status: ${metadata.isProcessing ? '🔄 Processando' : '⏳ Aguardando'}
         • Tentativas: ${metadata.attemptCount}`, chalk.blue);
     }
-  }, 30000); // A cada 30 segundos
+  }, 120000); // A cada 2 minutos
 }
 
 function updateAlbumMetadata(albumKey, message) {
@@ -762,6 +761,7 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       metadata.token = token;                // 2. associa ao álbum (em metadata, por exemplo)
       const legendaEditada = createEditedCaptionFixed(legendaOriginalParaEditar, fixedMessage); // NÃO adiciona o token na legenda!
 
+
       const mediaItems = validResults.map((r, idx) => ({
         type: r.type,
         media: r.filePath,
@@ -770,17 +770,26 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       }));
 
       // Verificação do token
-      const receivedToken = extractTokenFromCaption(mediaItems[0].caption);
-      if (!receivedToken || !validTokens.has(receivedToken)) {
+      if (!metadata.token || !validTokens.has(metadata.token)) {
         logWithTime('⛔ Tentativa de envio de álbum sem token autorizado!', chalk.red);
         cleanupAlbumResources(albumKey);
         return;
       }
-      validTokens.delete(receivedToken); // Remove o token após uso!
+      validTokens.delete(metadata.token);
 
       // Envia o álbum já com a legenda editada na primeira mídia
       logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
       await bot.sendMediaGroup(destino_id, mediaItems);
+
+      // Limpa todos os arquivos temporários usados no álbum
+      for (const r of validResults) {
+        try {
+          await fs.unlink(r.filePath);
+          logWithTime(`🧹 Arquivo temporário removido: ${r.filePath}`, chalk.yellow);
+        } catch (e) {
+          logWithTime(`⚠️ Erro ao remover arquivo temporário: ${e.message}`, chalk.yellow);
+        }
+      }
 
       logWithTime(`✅ Álbum enviado com sucesso: ${validResults.length} mídias`, chalk.green);
       cleanupAlbumResources(albumKey);
@@ -1446,19 +1455,33 @@ process.on('uncaughtException', (error) => {
 // === INICIALIZAÇÃO E LOGS DE STARTUP ===
 const groupNameCache = new Map();
 
+// Função robusta para pegar o nome de grupos/canais/usuários
 async function getGroupTitleById(chatId) {
   if (groupNameCache.has(chatId)) return groupNameCache.get(chatId);
   try {
-    // Remove o prefixo -100 se existir
-    const cleanId = chatId.startsWith("-100") ? chatId.slice(4) : chatId.replace("-", "");
-    const entity = await client.getEntity(BigInt(cleanId));
-    const title = entity.title || entity.firstName || entity.username || "Sem nome";
+    let entity;
+    // Se for username (começa com @)
+    if (typeof chatId === 'string' && chatId.startsWith('@')) {
+      entity = await client.getEntity(chatId);
+    }
+    // Se for grupo/canal (-100...)
+    else if (typeof chatId === 'string' && chatId.startsWith('-100')) {
+      entity = await client.getEntity(BigInt(chatId));
+    }
+    // Se for outro número, tenta direto
+    else {
+      entity = await client.getEntity(chatId);
+    }
+    // Nome de canal/grupo/usuário
+    const title = entity.title || [entity.firstName, entity.lastName].filter(Boolean).join(' ') || entity.username || `ID ${chatId}`;
     groupNameCache.set(chatId, title);
     return title;
   } catch (e) {
-    return "ID " + chatId;
+    // Se der erro, retorna ID mesmo
+    return `ID ${chatId}`;
   }
 }
+
 async function iniciarBot() {
   try {
     logWithTime('🚀 Iniciando bot de repasse...', chalk.cyan);

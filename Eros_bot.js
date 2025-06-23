@@ -516,7 +516,7 @@ function createEditedCaptionFixed(originalCaption, fixedMessage) {
   }
 
   // Combinar: linhas preservadas + quebra dupla + mensagem fixa
-  const resultado = preservedLines.join('\n') + '\n\n' + fixedMessage;
+  const resultado = preservedLines.join('\n') + '\n' + fixedMessage;
   const resultadoFinal = aplicarTransformacoes(resultado);
 
   logWithTime(`✅ Legenda editada criada com sucesso`, chalk.green);

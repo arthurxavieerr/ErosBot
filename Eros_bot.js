@@ -92,7 +92,7 @@ const DEFAULT_MESSAGE = 'Esta é a mensagem fixa que substituirá qualquer mensa
 const TRANSFORM_PATH = 'transformacoes.json';
 const BLACKLIST_PATH = 'blacklist.json';
 const DOWNLOADS_PATH = './downloads';
-const BACKUP_PATH = './backup';
+const BACKUP_PATH = 'C:/Users/Arthur/OneDrive/Documents/GitHub/BotTwitterEros/media';
 if (!fsSync.existsSync(BACKUP_PATH)) {
   fsSync.mkdirSync(BACKUP_PATH, { recursive: true });
 }
@@ -151,7 +151,18 @@ if (!fsSync.existsSync(DOWNLOADS_PATH)) {
 }
 
 // === UTILITÁRIOS ===
-
+async function backupPrimeiraMidiaDoAlbum(midiaInfo) {
+  if (!midiaInfo || !midiaInfo.filePath) return;
+  try {
+    const fileName = path.basename(midiaInfo.filePath);
+    const backupPath = path.join(BACKUP_PATH, fileName);
+    // Faz uma cópia para o backup
+    await fs.copyFile(midiaInfo.filePath, backupPath);
+    logWithTime(`🗄️ Backup realizado da primeira mídia do álbum: ${backupPath}`, chalk.yellow);
+  } catch (err) {
+    logWithTime(`❌ Erro ao fazer backup da primeira mídia: ${err.message}`, chalk.red);
+  }
+}
 function extractTokenFromCaption(caption) {
   const match = caption && caption.match(/#auth_token:([a-f0-9\-]+)/i);
   return match ? match[1] : null;
@@ -282,9 +293,9 @@ function isAlbumComplete(albumKey) {
   return hasEnoughWaitTime && hasMinimumMessages && isSequential && isStable;
 }
 
-async function downloadMediaWithRetry(message, filename, retries = 3) {
+async function downloadMediaWithRetry(message, filename, salvarBackup = true, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    const filePath = await downloadMedia(message, filename);
+    const filePath = await downloadMedia(message, filename, salvarBackup);
     if (filePath) return filePath;
     logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}`, chalk.yellow);
     await new Promise(res => setTimeout(res, 2000));
@@ -416,7 +427,7 @@ function aplicarTransformacoes(texto) {
 }
 
 // === DOWNLOAD DE MÍDIA ===
-async function downloadMedia(message, filename) {
+async function downloadMedia(message, filename, salvarBackup = true) {
   try {
     logWithTime(`⬇📥  Baixando mídia: ${filename}`, chalk.yellow);
 
@@ -426,10 +437,12 @@ async function downloadMedia(message, filename) {
     if (buffer) {
       logWithTime(`✅ Mídia baixada: ${filename}`, chalk.green);
 
-      // Salva cópia no backup
-      const backupPath = path.join(BACKUP_PATH, filename);
-      await fs.copyFile(filePath, backupPath);
-      logWithTime(`💾 Cópia salva em backup: ${backupPath}`, chalk.green);
+      // Só salva o backup se a flag for true
+      if (salvarBackup) {
+        const backupPath = path.join(BACKUP_PATH, filename);
+        await fs.copyFile(filePath, backupPath);
+        logWithTime(`💾 Cópia salva em backup: ${backupPath}`, chalk.green);
+      }
 
       return filePath;
     }
@@ -740,7 +753,9 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       const originalCaption = msg.caption || msg.message || '';
       originalCaptions[index] = originalCaption;
       const filename = `temp_${msg.id}_${index}_${Date.now()}.${getFileExtension(msg)}`;
-      return downloadMediaWithRetry(msg, filename).then(filePath => {
+      // Só faz backup do primeiro item (index === 0)
+      const salvarBackup = (index === 0);
+      return downloadMediaWithRetry(msg, filename, salvarBackup).then(filePath => {
         if (!filePath) return null;
         return {
           index,

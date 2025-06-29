@@ -99,10 +99,11 @@ if (!fsSync.existsSync(BACKUP_PATH)) {
 
 // === CONFIGURAÇÕES DO BOT DE REPASSE ===
 const PARES_REPASSE = {
-  '-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
+  //'-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
   '-1001161980965': '-1002519203567', // BARÃO > EROS
   '-1002655206464': '-1002519203567', // CLONE > EROS
 };
+
 
 // Timeouts para buffers
 const ALBUM_TIMEOUT = 120000;
@@ -127,11 +128,16 @@ const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API
 });
 
 let isEditActive = true; // Ativado por padrão
+let backupAlternado = false;
 let fixedMessage = loadFixedMessage();
 let transformacoes = loadJSON(TRANSFORM_PATH, {});
 const blacklistArray = loadJSON(BLACKLIST_PATH, []);
-let blacklist = new Set(Array.isArray(blacklistArray) ? blacklistArray : []);
-
+let blacklist = new Set(
+  Array.isArray(blacklistArray)
+    ? blacklistArray.map(normalizeText)
+    : []
+);
+console.log("DEBUG BLACKLIST AT START:", [...blacklist]);
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // Buffers e controle
@@ -399,20 +405,40 @@ function extractChatId(message) {
 }
 
 // === VERIFICAÇÃO DE FRASES PROIBIDAS ===
+function normalizeText(txt) {
+  return (txt ?? '')
+    .toLowerCase()
+    .normalize('NFC')
+    .trim()
+    .replace(/[^\p{L}\p{N}\s]+/gu, '')  // Remove tudo que não é letra, número ou espaço
+    .replace(/\s+/g, ' '); // Remove múltiplos espaços
+}
+
 function containsForbiddenPhrase(text) {
   if (!text) return false;
-  text = text.toLowerCase();
+  const normText = normalizeText(text);
   if (!Array.isArray(blacklist)) return false; // segurança extra
-  return blacklist.some(palavra => text.includes(palavra.toLowerCase()));
+  // blacklist é Set, então use spread para garantir array
+  return [...blacklist].some(palavra => {
+    const normPalavra = normalizeText(palavra);
+    return normText.includes(normPalavra);
+  });
 }
 
 
 function albumContainsForbiddenPhrase(mensagens) {
   for (const msg of mensagens) {
-    const txt = (msg.caption ?? msg.message ?? '').toLowerCase();
-    if (containsForbiddenPhrase(txt)) {
-      logWithTime(`❌ Álbum contém frase proibida na mensagem ${msg.id}: "${txt.substring(0, 50)}..."`, chalk.red);
-      return true;
+    const txt = msg.caption ?? msg.message ?? '';
+    const normTxt = normalizeText(txt);
+    logWithTime(`🔎 Legenda original: "${txt.substring(0, 100)}..."`, chalk.yellow);
+    logWithTime(`🔎 Legenda normalizada: "${normTxt}"`, chalk.yellow);
+
+    for (const palavra of blacklist) {
+      logWithTime(`🔎 Testando frase da blacklist: "${palavra}"`, chalk.magenta);
+      if (normTxt.includes(palavra)) {
+        logWithTime(`❌ Álbum contém frase proibida na mensagem ${msg.id}: "${txt.substring(0, 50)}..."`, chalk.red);
+        return true;
+      }
     }
   }
   return false;
@@ -437,8 +463,9 @@ async function downloadMedia(message, filename, salvarBackup = true) {
     if (buffer) {
       logWithTime(`✅ Mídia baixada: ${filename}`, chalk.green);
 
-      // Só salva o backup se a flag for true
-      if (salvarBackup) {
+      // Alterna backup: uma vez sim, uma vez não
+      backupAlternado = !backupAlternado;
+      if (salvarBackup && backupAlternado) {
         const backupPath = path.join(BACKUP_PATH, filename);
         await fs.copyFile(filePath, backupPath);
         logWithTime(`💾 Cópia salva em backup: ${backupPath}`, chalk.green);
@@ -1201,8 +1228,7 @@ bot.onText(/\/remove_transform (.+)/, (msg, match) => {
 
 bot.onText(/\/add_blacklist (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const phrase = match[1].trim().toLowerCase();
-  
+  const phrase = normalizeText(match[1]);
   blacklist.add(phrase);
   
   bot.sendMessage(chatId, `
@@ -1228,20 +1254,21 @@ bot.onText(/\/list_blacklist/, (msg) => {
   let index = 1;
   
   for (const phrase of blacklist) {
-    list += `${index}. "${phrase}"\n`;
+    const shown = normalizeText(phrase);
+    list += `${index}. "${shown}"\n`;
     index++;
-  }
+}
   
   bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/remove_blacklist (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const phrase = match[1].trim().toLowerCase();
-  
-  if (blacklist.has(phrase)) {
-    blacklist.delete(phrase);
-    
+  const phrase = match[1];
+  const normalizedPhrase = normalizeText(phrase);
+  if (blacklist.has(normalizedPhrase)) {
+    blacklist.delete(normalizedPhrase);
+
     bot.sendMessage(chatId, `
 ✅ *Frase removida da blacklist:*
 

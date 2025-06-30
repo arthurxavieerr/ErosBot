@@ -113,11 +113,11 @@ const EDIT_TIMEOUT = 3000; // 15 segundos para edição
 // === INICIALIZAÇÃO ===
 const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API_HASH, {
   connectionRetries: 5,
-  retryDelay: 1000,
+  retryDelay: 5000,
   timeout: 10,
   autoReconnect: true,
   maxConcurrentDownloads: 1,
-  useWSS: true,
+  //useWSS: true,
   logger: { // Adicione esta configuração
     log: () => {}, // Função vazia para logs normais
     warn: () => {}, // Função vazia para avisos

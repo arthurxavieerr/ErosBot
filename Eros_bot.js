@@ -111,19 +111,35 @@ const BUFFER_SEM_GROUP_TIMEOUT = 120000;
 const EDIT_TIMEOUT = 3000; // 15 segundos para edição
 
 // === INICIALIZAÇÃO ===
-const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API_HASH, {
-  connectionRetries: 5,
-  retryDelay: 5000,
-  timeout: 10,
-  autoReconnect: true,
-  maxConcurrentDownloads: 1,
-  //useWSS: true,
-  logger: { // Adicione esta configuração
-    log: () => {}, // Função vazia para logs normais
-    warn: () => {}, // Função vazia para avisos
-    error: (e) => logWithTime(`❌ Erro crítico: ${e}`, chalk.red), // Mantém apenas erros críticos
-    info: () => {}, // Função vazia para informações
-    debug: () => {} // Função vazia para debug
+const client = new TelegramClient(
+  new StringSession(STRING_SESSION),
+  API_ID,
+  API_HASH,
+  {
+    connectionRetries: 10,   // Aumentado para mais tentativas
+    retryDelay: 5000,
+    timeout: 10,
+    autoReconnect: true,
+    maxConcurrentDownloads: 1,
+    //useWSS: true,
+    logger: {
+      log: () => {},
+      warn: () => {},
+      error: (e) => logWithTime(`❌ Erro crítico: ${e}`, chalk.red),
+      info: () => {},
+      debug: () => {}
+    }
+  }
+);
+
+// Evento para reconectar automaticamente ao perder conexão
+client.session?.on?.('disconnected', async () => {
+  logWithTime('🔴 Desconectado do Telegram! Tentando reconectar...', chalk.red);
+  try {
+    await client.connect();
+    logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
+  } catch (e) {
+    logWithTime('❌ Falha ao reconectar: ' + e.message, chalk.red);
   }
 });
 
@@ -301,14 +317,39 @@ function isAlbumComplete(albumKey) {
 
 async function downloadMediaWithRetry(message, filename, salvarBackup = true, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    const filePath = await downloadMedia(message, filename, salvarBackup);
-    if (filePath) return filePath;
-    logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}`, chalk.yellow);
+    // 1. Checa se está conectado antes de tentar baixar
+    if (!client.connected) {
+      logWithTime('⛔ Cliente Telegram desconectado! Tentando reconectar...', chalk.red);
+      try {
+        await client.connect();
+        logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
+      } catch (err) {
+        logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
+        await new Promise(res => setTimeout(res, 2000));
+        continue; // Tenta na próxima iteração
+      }
+    }
+    try {
+      const filePath = await downloadMedia(message, filename, salvarBackup);
+      if (filePath) return filePath;
+    } catch (e) {
+      logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}: ${e.message}`, chalk.yellow);
+      // Se o erro for "Not connected", tenta reconectar na próxima iteração
+      if (e.message && e.message.includes('Not connected')) {
+        logWithTime('🛠️ Forçando reconexão devido a erro de conexão...', chalk.red);
+        try {
+          await client.connect();
+          logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
+        } catch (err) {
+          logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
+        }
+      }
+    }
     await new Promise(res => setTimeout(res, 2000));
   }
+  logWithTime('❌ Todas as tentativas de download falharam.', chalk.red);
   return null;
 }
-
 
 function loadFixedMessage() {
   try {

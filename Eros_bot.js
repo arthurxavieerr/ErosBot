@@ -133,14 +133,28 @@ const client = new TelegramClient(
 );
 
 // Evento para reconectar automaticamente ao perder conexão
+let reconnecting = false;
+let reconnectAttempts = 0;
+
 client.session?.on?.('disconnected', async () => {
+  if (reconnecting) return;
+  reconnecting = true;
   logWithTime('🔴 Desconectado do Telegram! Tentando reconectar...', chalk.red);
-  try {
-    await client.connect();
-    logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
-  } catch (e) {
-    logWithTime('❌ Falha ao reconectar: ' + e.message, chalk.red);
+
+  while (!client.connected && reconnectAttempts < 10) {
+    try {
+      reconnectAttempts++;
+      await client.connect();
+      logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
+      reconnectAttempts = 0;
+      break;
+    } catch (e) {
+      const delay = Math.min(30000, 2000 * reconnectAttempts);
+      logWithTime(`⚠️ Falha ao reconectar, nova tentativa em ${delay/1000}s`, chalk.yellow);
+      await new Promise(res => setTimeout(res, delay));
+    }
   }
+  reconnecting = false;
 });
 
 let isEditActive = true; // Ativado por padrão
@@ -320,13 +334,21 @@ async function downloadMediaWithRetry(message, filename, salvarBackup = true, re
     // 1. Checa se está conectado antes de tentar baixar
     if (!client.connected) {
       logWithTime('⛔ Cliente Telegram desconectado! Tentando reconectar...', chalk.red);
-      try {
-        await client.connect();
-        logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
-      } catch (err) {
-        logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
-        await new Promise(res => setTimeout(res, 2000));
-        continue; // Tenta na próxima iteração
+      // Aguarda reconexão global se já estiver em progresso
+      let waitCount = 0;
+      while (reconnecting && waitCount < 30) {
+        await new Promise(res => setTimeout(res, 1000));
+        waitCount++;
+      }
+      if (!client.connected) {
+        try {
+          await client.connect();
+          logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
+        } catch (err) {
+          logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
+          await new Promise(res => setTimeout(res, 2000));
+          continue; // Tenta na próxima iteração
+        }
       }
     }
     try {
@@ -334,7 +356,6 @@ async function downloadMediaWithRetry(message, filename, salvarBackup = true, re
       if (filePath) return filePath;
     } catch (e) {
       logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}: ${e.message}`, chalk.yellow);
-      // Se o erro for "Not connected", tenta reconectar na próxima iteração
       if (e.message && e.message.includes('Not connected')) {
         logWithTime('🛠️ Forçando reconexão devido a erro de conexão...', chalk.red);
         try {
@@ -350,6 +371,7 @@ async function downloadMediaWithRetry(message, filename, salvarBackup = true, re
   logWithTime('❌ Todas as tentativas de download falharam.', chalk.red);
   return null;
 }
+
 
 function loadFixedMessage() {
   try {
@@ -996,17 +1018,18 @@ async function album_timeout_handler_corrected(albumKey, destino) {
     const metadata = album_metadata.get(albumKey);
     if (!metadata) return;
 
-    // 1. Se bloqueado, limpa tudo e sai
     if (albuns_bloqueados.has(albumKey)) {
         logWithTime(`⛔ Álbum ${albumKey} está bloqueado, descartando e limpando.`, chalk.red);
         albuns_bloqueados.delete(albumKey);
         album_cache.delete(albumKey);
         album_metadata.delete(albumKey);
-        timeout_tasks.delete(albumKey);
+        if (timeout_tasks.has(albumKey)) {
+          clearTimeout(timeout_tasks.get(albumKey));
+          timeout_tasks.delete(albumKey);
+        }
         return;
     }
 
-    // 2. Se não bloqueado, processa normalmente
     if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
         logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
 
@@ -1019,13 +1042,16 @@ async function album_timeout_handler_corrected(albumKey, destino) {
             logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
             metadata.isProcessing = false;
         } finally {
-            // Limpeza final
             album_cache.delete(albumKey);
-            timeout_tasks.delete(albumKey);
             album_metadata.delete(albumKey);
+            if (timeout_tasks.has(albumKey)) {
+              clearTimeout(timeout_tasks.get(albumKey));
+              timeout_tasks.delete(albumKey);
+            }
         }
     }
 }
+
 // No handler de timeout do buffer sem grupo:
 async function buffer_sem_group_timeout_handler_corrected(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -1670,6 +1696,19 @@ function cleanupStaleAlbums() {
     }
   }
 }
+
+function monitorarSockets() {
+  setInterval(() => {
+    try {
+      // Só funciona em sistemas POSIX (Linux)
+      const used = process.memoryUsage().heapUsed / 1024 / 1024;
+      logWithTime(`🧪 RAM usada: ${Math.round(used)}MB`, chalk.magenta);
+      // Se quiser usar require('child_process').execSync('lsof -p ' + process.pid)... pode mostrar no log!
+    } catch(e) {}
+  }, 300000); // a cada 5 minutos
+}
+monitorarSockets();
+
 setInterval(cleanupStaleAlbums, ALBUM_TIMEOUT);
 
 // === EXECUÇÃO PRINCIPAL ===

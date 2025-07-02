@@ -99,11 +99,10 @@ if (!fsSync.existsSync(BACKUP_PATH)) {
 
 // === CONFIGURAÇÕES DO BOT DE REPASSE ===
 const PARES_REPASSE = {
-  //'-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
+  '-1001556868697': '-1002655206464', // BELLA Mantovani > CLONE
   '-1001161980965': '-1002519203567', // BARÃO > EROS
   '-1002655206464': '-1002519203567', // CLONE > EROS
 };
-
 
 // Timeouts para buffers
 const ALBUM_TIMEOUT = 120000;
@@ -111,63 +110,28 @@ const BUFFER_SEM_GROUP_TIMEOUT = 120000;
 const EDIT_TIMEOUT = 3000; // 15 segundos para edição
 
 // === INICIALIZAÇÃO ===
-const client = new TelegramClient(
-  new StringSession(STRING_SESSION),
-  API_ID,
-  API_HASH,
-  {
-    connectionRetries: 10,   // Aumentado para mais tentativas
-    retryDelay: 5000,
-    timeout: 10,
-    autoReconnect: true,
-    maxConcurrentDownloads: 1,
-    //useWSS: true,
-    logger: {
-      log: () => {},
-      warn: () => {},
-      error: (e) => logWithTime(`❌ Erro crítico: ${e}`, chalk.red),
-      info: () => {},
-      debug: () => {}
-    }
+const client = new TelegramClient(new StringSession(STRING_SESSION), API_ID, API_HASH, {
+  connectionRetries: 5,
+  retryDelay: 1000,
+  timeout: 10,
+  autoReconnect: true,
+  maxConcurrentDownloads: 1,
+  useWSS: true,
+  logger: { // Adicione esta configuração
+    log: () => {}, // Função vazia para logs normais
+    warn: () => {}, // Função vazia para avisos
+    error: (e) => logWithTime(`❌ Erro crítico: ${e}`, chalk.red), // Mantém apenas erros críticos
+    info: () => {}, // Função vazia para informações
+    debug: () => {} // Função vazia para debug
   }
-);
-
-// Evento para reconectar automaticamente ao perder conexão
-let reconnecting = false;
-let reconnectAttempts = 0;
-
-client.session?.on?.('disconnected', async () => {
-  if (reconnecting) return;
-  reconnecting = true;
-  logWithTime('🔴 Desconectado do Telegram! Tentando reconectar...', chalk.red);
-
-  while (!client.connected && reconnectAttempts < 10) {
-    try {
-      reconnectAttempts++;
-      await client.connect();
-      logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
-      reconnectAttempts = 0;
-      break;
-    } catch (e) {
-      const delay = Math.min(30000, 2000 * reconnectAttempts);
-      logWithTime(`⚠️ Falha ao reconectar, nova tentativa em ${delay/1000}s`, chalk.yellow);
-      await new Promise(res => setTimeout(res, delay));
-    }
-  }
-  reconnecting = false;
 });
 
 let isEditActive = true; // Ativado por padrão
-let backupAlternado = false;
 let fixedMessage = loadFixedMessage();
 let transformacoes = loadJSON(TRANSFORM_PATH, {});
 const blacklistArray = loadJSON(BLACKLIST_PATH, []);
-let blacklist = new Set(
-  Array.isArray(blacklistArray)
-    ? blacklistArray.map(normalizeText)
-    : []
-);
-console.log("DEBUG BLACKLIST AT START:", [...blacklist]);
+let blacklist = new Set(Array.isArray(blacklistArray) ? blacklistArray : []);
+
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // Buffers e controle
@@ -331,44 +295,11 @@ function isAlbumComplete(albumKey) {
 
 async function downloadMediaWithRetry(message, filename, salvarBackup = true, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    // 1. Checa se está conectado antes de tentar baixar
-    if (!client.connected) {
-      logWithTime('⛔ Cliente Telegram desconectado! Tentando reconectar...', chalk.red);
-      // Aguarda reconexão global se já estiver em progresso
-      let waitCount = 0;
-      while (reconnecting && waitCount < 30) {
-        await new Promise(res => setTimeout(res, 1000));
-        waitCount++;
-      }
-      if (!client.connected) {
-        try {
-          await client.connect();
-          logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
-        } catch (err) {
-          logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
-          await new Promise(res => setTimeout(res, 2000));
-          continue; // Tenta na próxima iteração
-        }
-      }
-    }
-    try {
-      const filePath = await downloadMedia(message, filename, salvarBackup);
-      if (filePath) return filePath;
-    } catch (e) {
-      logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}: ${e.message}`, chalk.yellow);
-      if (e.message && e.message.includes('Not connected')) {
-        logWithTime('🛠️ Forçando reconexão devido a erro de conexão...', chalk.red);
-        try {
-          await client.connect();
-          logWithTime('🟢 Reconectado ao Telegram!', chalk.green);
-        } catch (err) {
-          logWithTime('❌ Falha ao reconectar: ' + err.message, chalk.red);
-        }
-      }
-    }
+    const filePath = await downloadMedia(message, filename, salvarBackup);
+    if (filePath) return filePath;
+    logWithTime(`⚠️ Download falhou, tentativa ${i + 1} de ${retries}`, chalk.yellow);
     await new Promise(res => setTimeout(res, 2000));
   }
-  logWithTime('❌ Todas as tentativas de download falharam.', chalk.red);
   return null;
 }
 
@@ -468,40 +399,20 @@ function extractChatId(message) {
 }
 
 // === VERIFICAÇÃO DE FRASES PROIBIDAS ===
-function normalizeText(txt) {
-  return (txt ?? '')
-    .toLowerCase()
-    .normalize('NFC')
-    .trim()
-    .replace(/[^\p{L}\p{N}\s]+/gu, '')  // Remove tudo que não é letra, número ou espaço
-    .replace(/\s+/g, ' '); // Remove múltiplos espaços
-}
-
 function containsForbiddenPhrase(text) {
   if (!text) return false;
-  const normText = normalizeText(text);
+  text = text.toLowerCase();
   if (!Array.isArray(blacklist)) return false; // segurança extra
-  // blacklist é Set, então use spread para garantir array
-  return [...blacklist].some(palavra => {
-    const normPalavra = normalizeText(palavra);
-    return normText.includes(normPalavra);
-  });
+  return blacklist.some(palavra => text.includes(palavra.toLowerCase()));
 }
 
 
 function albumContainsForbiddenPhrase(mensagens) {
   for (const msg of mensagens) {
-    const txt = msg.caption ?? msg.message ?? '';
-    const normTxt = normalizeText(txt);
-    logWithTime(`🔎 Legenda original: "${txt.substring(0, 100)}..."`, chalk.yellow);
-    logWithTime(`🔎 Legenda normalizada: "${normTxt}"`, chalk.yellow);
-
-    for (const palavra of blacklist) {
-      logWithTime(`🔎 Testando frase da blacklist: "${palavra}"`, chalk.magenta);
-      if (normTxt.includes(palavra)) {
-        logWithTime(`❌ Álbum contém frase proibida na mensagem ${msg.id}: "${txt.substring(0, 50)}..."`, chalk.red);
-        return true;
-      }
+    const txt = (msg.caption ?? msg.message ?? '').toLowerCase();
+    if (containsForbiddenPhrase(txt)) {
+      logWithTime(`❌ Álbum contém frase proibida na mensagem ${msg.id}: "${txt.substring(0, 50)}..."`, chalk.red);
+      return true;
     }
   }
   return false;
@@ -526,9 +437,8 @@ async function downloadMedia(message, filename, salvarBackup = true) {
     if (buffer) {
       logWithTime(`✅ Mídia baixada: ${filename}`, chalk.green);
 
-      // Alterna backup: uma vez sim, uma vez não
-      backupAlternado = !backupAlternado;
-      if (salvarBackup && backupAlternado) {
+      // Só salva o backup se a flag for true
+      if (salvarBackup) {
         const backupPath = path.join(BACKUP_PATH, filename);
         await fs.copyFile(filePath, backupPath);
         logWithTime(`💾 Cópia salva em backup: ${backupPath}`, chalk.green);
@@ -892,45 +802,8 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       validTokens.delete(metadata.token);
 
       // Envia o álbum já com a legenda editada na primeira mídia
-      // LOG EXTRA: Checa o tamanho de cada arquivo antes de enviar
-      const MAX_FILE_SIZE = 50 * 1024 * 1024;
-      for (const item of mediaItems) {
-        try {
-          const stats = await fs.stat(item.media);
-          logWithTime(`Arquivo: ${item.media} | Tamanho: ${stats.size} bytes`, chalk.cyan);
-          if (stats.size > MAX_FILE_SIZE) {
-            logWithTime(`❌ Arquivo ${item.media} excede o limite de 50MB e será removido do álbum`, chalk.red);
-            // Remove do array de envio
-            mediaItems.splice(mediaItems.indexOf(item), 1);
-          }
-        } catch (e) {
-          logWithTime(`Erro ao checar arquivo: ${item.media} | ${e.message}`, chalk.red);
-        }
-      }
-
-      // Checa se ainda tem itens para enviar
-      if (mediaItems.length === 0) {
-        logWithTime(`❌ Nenhuma mídia válida para envio após checagem de tamanho.`, chalk.red);
-        cleanupAlbumResources(albumKey);
-        return;
-      }
-
-      // Divida o álbum em chunks de até 10 mídias
-      const MAX_MEDIA_PER_ALBUM = 10;
-      for (let i = 0; i < mediaItems.length; i += MAX_MEDIA_PER_ALBUM) {
-        const chunk = mediaItems.slice(i, i + MAX_MEDIA_PER_ALBUM);
-        try {
-          logWithTime(`📤 Enviando chunk de álbum (${chunk.length} mídias)`, chalk.green);
-          await bot.sendMediaGroup(destino_id, chunk);
-        } catch (err) {
-          if (err.response && err.response.body && err.response.body.error_code === 413) {
-            logWithTime(`❌ Chunk de álbum muito grande para o Telegram. Reduza o número ou tamanho dos arquivos.`, chalk.red);
-          } else {
-            logWithTime(`❌ Erro ao enviar chunk do álbum: ${err.message}`, chalk.red);
-          }
-        }
-        await new Promise(res => setTimeout(res, 1000)); // Pequeno delay entre chunks
-      }
+      logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
+      await bot.sendMediaGroup(destino_id, mediaItems);
 
       // Limpa todos os arquivos temporários usados no álbum
       for (const r of validResults) {
@@ -1055,18 +928,17 @@ async function album_timeout_handler_corrected(albumKey, destino) {
     const metadata = album_metadata.get(albumKey);
     if (!metadata) return;
 
+    // 1. Se bloqueado, limpa tudo e sai
     if (albuns_bloqueados.has(albumKey)) {
         logWithTime(`⛔ Álbum ${albumKey} está bloqueado, descartando e limpando.`, chalk.red);
         albuns_bloqueados.delete(albumKey);
         album_cache.delete(albumKey);
         album_metadata.delete(albumKey);
-        if (timeout_tasks.has(albumKey)) {
-          clearTimeout(timeout_tasks.get(albumKey));
-          timeout_tasks.delete(albumKey);
-        }
+        timeout_tasks.delete(albumKey);
         return;
     }
 
+    // 2. Se não bloqueado, processa normalmente
     if (!metadata.isProcessing && !metadata.processingStarted && isAlbumComplete(albumKey)) {
         logWithTime(`🎯 Iniciando processamento do álbum ${albumKey}`, chalk.green);
 
@@ -1079,16 +951,13 @@ async function album_timeout_handler_corrected(albumKey, destino) {
             logWithTime(`❌ Erro ao processar álbum: ${error.message}`, chalk.red);
             metadata.isProcessing = false;
         } finally {
+            // Limpeza final
             album_cache.delete(albumKey);
+            timeout_tasks.delete(albumKey);
             album_metadata.delete(albumKey);
-            if (timeout_tasks.has(albumKey)) {
-              clearTimeout(timeout_tasks.get(albumKey));
-              timeout_tasks.delete(albumKey);
-            }
         }
     }
 }
-
 // No handler de timeout do buffer sem grupo:
 async function buffer_sem_group_timeout_handler_corrected(chatId) {
   const msgs = buffer_sem_group.get(chatId) || [];
@@ -1332,7 +1201,8 @@ bot.onText(/\/remove_transform (.+)/, (msg, match) => {
 
 bot.onText(/\/add_blacklist (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const phrase = normalizeText(match[1]);
+  const phrase = match[1].trim().toLowerCase();
+  
   blacklist.add(phrase);
   
   bot.sendMessage(chatId, `
@@ -1358,21 +1228,20 @@ bot.onText(/\/list_blacklist/, (msg) => {
   let index = 1;
   
   for (const phrase of blacklist) {
-    const shown = normalizeText(phrase);
-    list += `${index}. "${shown}"\n`;
+    list += `${index}. "${phrase}"\n`;
     index++;
-}
+  }
   
   bot.sendMessage(chatId, list, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/remove_blacklist (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const phrase = match[1];
-  const normalizedPhrase = normalizeText(phrase);
-  if (blacklist.has(normalizedPhrase)) {
-    blacklist.delete(normalizedPhrase);
-
+  const phrase = match[1].trim().toLowerCase();
+  
+  if (blacklist.has(phrase)) {
+    blacklist.delete(phrase);
+    
     bot.sendMessage(chatId, `
 ✅ *Frase removida da blacklist:*
 
@@ -1733,19 +1602,6 @@ function cleanupStaleAlbums() {
     }
   }
 }
-
-function monitorarSockets() {
-  setInterval(() => {
-    try {
-      // Só funciona em sistemas POSIX (Linux)
-      const used = process.memoryUsage().heapUsed / 1024 / 1024;
-      logWithTime(`🧪 RAM usada: ${Math.round(used)}MB`, chalk.magenta);
-      // Se quiser usar require('child_process').execSync('lsof -p ' + process.pid)... pode mostrar no log!
-    } catch(e) {}
-  }, 300000); // a cada 5 minutos
-}
-monitorarSockets();
-
 setInterval(cleanupStaleAlbums, ALBUM_TIMEOUT);
 
 // === EXECUÇÃO PRINCIPAL ===

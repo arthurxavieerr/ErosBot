@@ -892,8 +892,45 @@ async function enviarAlbumReenvioFixed(mensagens, destino_id) {
       validTokens.delete(metadata.token);
 
       // Envia o álbum já com a legenda editada na primeira mídia
-      logWithTime(`📤 Enviando álbum já com legenda editada na primeira mídia`, chalk.green);
-      await bot.sendMediaGroup(destino_id, mediaItems);
+      // LOG EXTRA: Checa o tamanho de cada arquivo antes de enviar
+      const MAX_FILE_SIZE = 50 * 1024 * 1024;
+      for (const item of mediaItems) {
+        try {
+          const stats = await fs.stat(item.media);
+          logWithTime(`Arquivo: ${item.media} | Tamanho: ${stats.size} bytes`, chalk.cyan);
+          if (stats.size > MAX_FILE_SIZE) {
+            logWithTime(`❌ Arquivo ${item.media} excede o limite de 50MB e será removido do álbum`, chalk.red);
+            // Remove do array de envio
+            mediaItems.splice(mediaItems.indexOf(item), 1);
+          }
+        } catch (e) {
+          logWithTime(`Erro ao checar arquivo: ${item.media} | ${e.message}`, chalk.red);
+        }
+      }
+
+      // Checa se ainda tem itens para enviar
+      if (mediaItems.length === 0) {
+        logWithTime(`❌ Nenhuma mídia válida para envio após checagem de tamanho.`, chalk.red);
+        cleanupAlbumResources(albumKey);
+        return;
+      }
+
+      // Divida o álbum em chunks de até 10 mídias
+      const MAX_MEDIA_PER_ALBUM = 10;
+      for (let i = 0; i < mediaItems.length; i += MAX_MEDIA_PER_ALBUM) {
+        const chunk = mediaItems.slice(i, i + MAX_MEDIA_PER_ALBUM);
+        try {
+          logWithTime(`📤 Enviando chunk de álbum (${chunk.length} mídias)`, chalk.green);
+          await bot.sendMediaGroup(destino_id, chunk);
+        } catch (err) {
+          if (err.response && err.response.body && err.response.body.error_code === 413) {
+            logWithTime(`❌ Chunk de álbum muito grande para o Telegram. Reduza o número ou tamanho dos arquivos.`, chalk.red);
+          } else {
+            logWithTime(`❌ Erro ao enviar chunk do álbum: ${err.message}`, chalk.red);
+          }
+        }
+        await new Promise(res => setTimeout(res, 1000)); // Pequeno delay entre chunks
+      }
 
       // Limpa todos os arquivos temporários usados no álbum
       for (const r of validResults) {
